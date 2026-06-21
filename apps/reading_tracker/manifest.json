@@ -1,0 +1,17 @@
+{
+  "app": { "id": "reading_tracker", "name": "Reading Tracker", "emoji": "📚", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_book",
+      "name": "book",
+      "operations": ["create", "read", "update", "delete"],
+      "fields": [
+        { "id": "fld_title",       "name": "title",       "type": "text",     "required": true, "max": 200 },
+        { "id": "fld_author",      "name": "author",      "type": "text" },
+        { "id": "fld_rating",      "name": "rating",      "type": "integer",  "min": 1, "max": 5 },
+        { "id": "fld_done",        "name": "done",        "type": "boolean",  "default": false },
+        { "id": "fld_finished_at", "name": "finished_at", "type": "datetime" }
+      ]
+    }
+  ]
+}

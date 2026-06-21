@@ -1,0 +1,153 @@
+package validate
+
+import (
+	"fmt"
+
+	"pocketknife/schema"
+)
+
+// semantic runs the checks that JSON Schema cannot express. It walks the parsed
+// model and accumulates structured errors; it never stops at the first problem,
+// so a caller sees every issue at once.
+func semantic(app *schema.App) Errors {
+	var errs Errors
+
+	entityIDs := map[string]bool{}
+	entityNames := map[string]bool{}
+
+	for ei, ent := range app.Entities {
+		epath := fmt.Sprintf("/entities/%d", ei)
+
+		if entityIDs[ent.ID] {
+			errs = append(errs, Error{epath + "/id", "duplicate_id", fmt.Sprintf("entity id %q is not unique", ent.ID)})
+		}
+		entityIDs[ent.ID] = true
+
+		if entityNames[ent.Name] {
+			errs = append(errs, Error{epath + "/name", "duplicate_name", fmt.Sprintf("entity name %q is not unique", ent.Name)})
+		}
+		entityNames[ent.Name] = true
+
+		fieldIDs := map[string]bool{}
+		fieldNames := map[string]bool{}
+
+		for fi, f := range ent.Fields {
+			fpath := fmt.Sprintf("%s/fields/%d", epath, fi)
+
+			if fieldIDs[f.ID] {
+				errs = append(errs, Error{fpath + "/id", "duplicate_id", fmt.Sprintf("field id %q is not unique within entity %q", f.ID, ent.Name)})
+			}
+			fieldIDs[f.ID] = true
+
+			if fieldNames[f.Name] {
+				errs = append(errs, Error{fpath + "/name", "duplicate_name", fmt.Sprintf("field name %q is not unique within entity %q", f.Name, ent.Name)})
+			}
+			fieldNames[f.Name] = true
+
+			if isReserved(f.Name) {
+				errs = append(errs, Error{fpath + "/name", "reserved_name", fmt.Sprintf("field name %q is reserved by the platform", f.Name)})
+			}
+
+			errs = append(errs, validateField(fpath, app, ent, f)...)
+		}
+	}
+	return errs
+}
+
+func isReserved(name string) bool {
+	for _, r := range schema.ReservedNames {
+		if name == r {
+			return true
+		}
+	}
+	return false
+}
+
+// validateField checks min/max ordering, reference resolution, enum value
+// integrity, and that any default satisfies the field's own constraints.
+func validateField(path string, app *schema.App, ent *schema.Entity, f *schema.Field) Errors {
+	var errs Errors
+
+	if f.Min != nil && f.Max != nil && *f.Min > *f.Max {
+		errs = append(errs, Error{path, "bad_bounds", fmt.Sprintf("min (%v) is greater than max (%v)", *f.Min, *f.Max)})
+	}
+
+	switch f.Type {
+	case schema.TypeReference:
+		if app.EntityByID(f.Target) == nil {
+			errs = append(errs, Error{path + "/target", "unresolved_reference", fmt.Sprintf("reference target %q does not resolve to an entity in this manifest", f.Target)})
+		}
+	case schema.TypeEnum:
+		seen := map[string]bool{}
+		for _, v := range f.Values {
+			if seen[v] {
+				errs = append(errs, Error{path + "/values", "duplicate_enum_value", fmt.Sprintf("enum value %q is repeated", v)})
+			}
+			seen[v] = true
+		}
+	}
+
+	if f.HasDefault {
+		errs = append(errs, validateDefault(path+"/default", f)...)
+	}
+	return errs
+}
+
+// validateDefault confirms a declared default would itself pass field
+// validation: enum membership, length bounds (text) and value bounds
+// (integer/real).
+func validateDefault(path string, f *schema.Field) Errors {
+	var errs Errors
+	switch f.Type {
+	case schema.TypeText:
+		s, ok := f.Default.(string)
+		if !ok {
+			return Errors{{path, "bad_default", "default must be a string"}}
+		}
+		n := float64(len([]rune(s)))
+		if f.Min != nil && n < *f.Min {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("default length %d is below min %v", len([]rune(s)), *f.Min)})
+		}
+		if f.Max != nil && n > *f.Max {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("default length %d exceeds max %v", len([]rune(s)), *f.Max)})
+		}
+	case schema.TypeInteger:
+		n, ok := f.Default.(int64)
+		if !ok {
+			return Errors{{path, "bad_default", "default must be an integer"}}
+		}
+		if f.Min != nil && float64(n) < *f.Min {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("default %d is below min %v", n, *f.Min)})
+		}
+		if f.Max != nil && float64(n) > *f.Max {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("default %d exceeds max %v", n, *f.Max)})
+		}
+	case schema.TypeReal:
+		n, ok := f.Default.(float64)
+		if !ok {
+			return Errors{{path, "bad_default", "default must be a number"}}
+		}
+		if f.Min != nil && n < *f.Min {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("default %v is below min %v", n, *f.Min)})
+		}
+		if f.Max != nil && n > *f.Max {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("default %v exceeds max %v", n, *f.Max)})
+		}
+	case schema.TypeEnum:
+		s, ok := f.Default.(string)
+		if !ok {
+			return Errors{{path, "bad_default", "default must be a string"}}
+		}
+		found := false
+		for _, v := range f.Values {
+			if v == s {
+				found = true
+				break
+			}
+		}
+		if !found {
+			errs = append(errs, Error{path, "bad_default", fmt.Sprintf("enum default %q is not one of the declared values", s)})
+		}
+	}
+	return errs
+}

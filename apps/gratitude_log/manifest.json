@@ -1,0 +1,13 @@
+{
+  "app": { "id": "gratitude_log", "name": "Gratitude Log", "emoji": "🙏", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_entry",
+      "name": "entry",
+      "operations": ["create", "read"],
+      "fields": [
+        { "id": "fld_text", "name": "text", "type": "text", "required": true }
+      ]
+    }
+  ]
+}

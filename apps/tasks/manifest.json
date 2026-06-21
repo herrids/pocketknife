@@ -1,0 +1,22 @@
+{
+  "app": { "id": "tasks", "name": "Tasks", "emoji": "✅", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_project",
+      "name": "project",
+      "fields": [
+        { "id": "fld_project_name", "name": "name", "type": "text", "required": true, "unique": true }
+      ]
+    },
+    {
+      "id": "ent_task",
+      "name": "task",
+      "fields": [
+        { "id": "fld_task_title", "name": "title",    "type": "text",      "required": true },
+        { "id": "fld_task_proj",  "name": "project",  "type": "reference", "target": "ent_project", "onDelete": "set_null" },
+        { "id": "fld_task_prio",  "name": "priority", "type": "enum",      "values": ["low", "medium", "high"], "default": "medium" },
+        { "id": "fld_task_due",   "name": "due",      "type": "datetime" }
+      ]
+    }
+  ]
+}
