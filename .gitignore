@@ -1,0 +1,12 @@
+# Per-app SQLite databases are created at runtime; never committed.
+data.db
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+/bin/
+/pocketknife
+
+# Go test/coverage artifacts
+*.out
