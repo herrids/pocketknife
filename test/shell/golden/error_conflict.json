@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "unique_violation",
+    "message": "a row with this value already exists"
+  }
+}
