@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	modernc.org/sqlite v1.53.0
+	pgregory.net/rapid v1.3.0
 )
 
 require (
