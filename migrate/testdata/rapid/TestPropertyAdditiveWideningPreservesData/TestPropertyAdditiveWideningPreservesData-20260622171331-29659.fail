@@ -1,0 +1,47 @@
+# 2026/06/22 17:13:31.587667 [TestPropertyAdditiveWideningPreservesData] [rapid] draw row_count: 4
+# 2026/06/22 17:13:31.587695 [TestPropertyAdditiveWideningPreservesData] [rapid] draw label_0: ""
+# 2026/06/22 17:13:31.587698 [TestPropertyAdditiveWideningPreservesData] [rapid] draw amount_0: 0
+# 2026/06/22 17:13:31.587701 [TestPropertyAdditiveWideningPreservesData] [rapid] draw parent_idx_0: 0
+# 2026/06/22 17:13:31.588974 [TestPropertyAdditiveWideningPreservesData] [rapid] draw label_1: ""
+# 2026/06/22 17:13:31.588979 [TestPropertyAdditiveWideningPreservesData] [rapid] draw amount_1: 0
+# 2026/06/22 17:13:31.588983 [TestPropertyAdditiveWideningPreservesData] [rapid] draw parent_idx_1: 0
+# 2026/06/22 17:13:31.590260 [TestPropertyAdditiveWideningPreservesData] [rapid] draw label_2: ""
+# 2026/06/22 17:13:31.590265 [TestPropertyAdditiveWideningPreservesData] [rapid] draw amount_2: 0
+# 2026/06/22 17:13:31.590267 [TestPropertyAdditiveWideningPreservesData] [rapid] draw parent_idx_2: 0
+# 2026/06/22 17:13:31.591395 [TestPropertyAdditiveWideningPreservesData] [rapid] draw label_3: ""
+# 2026/06/22 17:13:31.591400 [TestPropertyAdditiveWideningPreservesData] [rapid] draw amount_3: 9223372036854775807
+# 2026/06/22 17:13:31.591402 [TestPropertyAdditiveWideningPreservesData] [rapid] draw parent_idx_3: 0
+# 2026/06/22 17:13:31.595484 [TestPropertyAdditiveWideningPreservesData] row 3: int64->real widening lost precision: wrote 9223372036854775807, read back 9.223372036854776e+18 (round-tripped as int64 -9223372036854775808) -- known int64/float64 precision-loss defect
+# 
+v0.4.8#11745683811540071311
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1f47302087cf35
+0x0
+0x0
+0x0
+0x0

@@ -118,6 +118,40 @@ func TestLikeIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestLikeCaseFoldingIsASCIIOnly documents the precise boundary of the
+// case-insensitivity pinned by TestLikeIsCaseInsensitive above: SQLite's default
+// LIKE only folds case for ASCII A-Z/a-z. Per SQLite's own documentation, 'a' LIKE
+// 'A' is true but a non-ASCII letter's accented form is compared case-sensitively.
+// This is not a bug to fix -- it is the real, intentional behavior of the
+// "no ICU extension loaded" choice, pinned here so a future change in that
+// behavior is a deliberate decision rather than a silent regression.
+func TestLikeCaseFoldingIsASCIIOnly(t *testing.T) {
+	_, srv, _ := bootFromExamples(t)
+
+	do(t, srv, "POST", "/apps/reading_tracker/book",
+		map[string]any{"title": "café"}).wantStatus(t, 201)
+
+	matches := func(pattern string) int {
+		r := do(t, srv, "GET", listURL("reading_tracker/book", "title:like:"+pattern), nil).wantStatus(t, 200)
+		return int(r.body["total"].(float64))
+	}
+
+	// The exact stored form always matches.
+	if got := matches("café"); got != 1 {
+		t.Errorf("exact-case like: total = %d, want 1", got)
+	}
+	// Only the ASCII letters case-fold: an uppercase ASCII prefix still matches the
+	// lowercase-accented suffix unchanged.
+	if got := matches("CAFé"); got != 1 {
+		t.Errorf("ASCII-only-uppercase like (accented letter untouched): total = %d, want 1 (ASCII c/a/f should still fold)", got)
+	}
+	// The accented letter's own case is NOT folded: 'é' LIKE 'É' is false, so an
+	// otherwise-identical pattern with the accented letter uppercased does not match.
+	if got := matches("cafÉ"); got != 0 {
+		t.Errorf("non-ASCII-letter-case like: total = %d, want 0 (SQLite's default LIKE does not case-fold beyond ASCII)", got)
+	}
+}
+
 // fkManifest declares one parent with three children, one per onDelete action,
 // so cascade / restrict / set_null can each be proven natively enforced.
 const fkManifest = `{

@@ -1,0 +1,8 @@
+{
+  "created_at": "<TS>",
+  "id": "<ID>",
+  "label": "Widget",
+  "qty": 5,
+  "status": "open",
+  "updated_at": "<TS>"
+}

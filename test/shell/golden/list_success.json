@@ -1,0 +1,23 @@
+{
+  "data": [
+    {
+      "created_at": "<TS>",
+      "id": "<ID>",
+      "label": "Gadget",
+      "qty": 7,
+      "status": "closed",
+      "updated_at": "<TS>"
+    },
+    {
+      "created_at": "<TS>",
+      "id": "<ID>",
+      "label": "Widget",
+      "qty": 0,
+      "status": "open",
+      "updated_at": "<TS>"
+    }
+  ],
+  "limit": 10,
+  "offset": 0,
+  "total": 2
+}

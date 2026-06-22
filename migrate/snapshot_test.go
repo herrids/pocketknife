@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -123,6 +124,71 @@ func TestSnapshotRestoreUnderWAL(t *testing.T) {
 		if r["body"] == "three" {
 			t.Fatal("post-snapshot note survived a restore")
 		}
+	}
+}
+
+// refSnapManifest gives the restore/reopen FK test a reference field to probe;
+// the notes schema above has none.
+const refSnapManifest = `{
+  "app": { "id": "refsnap", "name": "RefSnap", "version": 1 },
+  "entities": [
+    { "id": "ent_parent", "name": "parent", "fields": [
+      { "id": "fld_label", "name": "label", "type": "text" }
+    ]},
+    { "id": "ent_child", "name": "child", "fields": [
+      { "id": "fld_ref", "name": "ref", "type": "reference", "target": "ent_parent", "onDelete": "restrict" }
+    ]}
+  ]
+}`
+
+// TestForeignKeysPragmaEnabledAfterRestore extends store.TestForeignKeysPragmaEnabled
+// (which only covers a fresh store.Open) across the exact close/restore/reopen
+// cycle restoreInPlace performs in apply.go: a destructive migration's failure
+// path closes the live store, restores a snapshot file over it, and reopens via
+// store.Open. Store keeps its *sql.DB private, so this proves enforcement through
+// the public surface instead of a raw PRAGMA query: a dangling reference must
+// still be rejected (and a valid one still accepted) on the reopened connection.
+func TestForeignKeysPragmaEnabledAfterRestore(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+	snapDir := filepath.Join(dir, SnapshotDirName)
+
+	st, app := openApp(t, dir, refSnapManifest)
+	parentID := seed(t, st, app.Entity("parent"), map[string]any{"label": "p"})
+
+	snapPath, err := Snapshot(st, snapDir)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := Restore(snapPath, dbPath); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+
+	st2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen after restore: %v", err)
+	}
+	defer st2.Close()
+
+	// A valid reference is still accepted.
+	if _, err := st2.Insert(app.Entity("child"), map[string]any{
+		"id": store.NewID(), "created_at": store.NowUTC(), "updated_at": store.NowUTC(),
+		"ref": parentID,
+	}); err != nil {
+		t.Fatalf("insert with a valid reference after restore+reopen: %v", err)
+	}
+	// A dangling reference must still be rejected. If the FK pragma were somehow
+	// not in effect on the reopened connection, this insert would silently
+	// succeed instead of returning store.ErrForeignKey.
+	_, err = st2.Insert(app.Entity("child"), map[string]any{
+		"id": store.NewID(), "created_at": store.NowUTC(), "updated_at": store.NowUTC(),
+		"ref": "does-not-exist",
+	})
+	if !errors.Is(err, store.ErrForeignKey) {
+		t.Fatalf("insert with a dangling reference after restore+reopen: err = %v, want store.ErrForeignKey (FK enforcement must survive the restore cycle)", err)
 	}
 }
 

@@ -1,0 +1,9 @@
+{
+  "app": { "id": "applog", "name": "AppLog", "version": 1 },
+  "entities": [
+    { "id": "ent_entry", "name": "entry", "operations": ["create", "read"], "fields": [
+      { "id": "fld_message", "name": "message", "type": "text", "required": true },
+      { "id": "fld_level", "name": "level", "type": "enum", "values": ["info", "warn", "error"], "default": "info" }
+    ]}
+  ]
+}

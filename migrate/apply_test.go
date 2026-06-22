@@ -200,6 +200,58 @@ func TestApplyRestoresOnExecutionFailure(t *testing.T) {
 	}
 }
 
+// TestApplySnapshotPrecedesDestructiveExecution makes explicit an invariant the
+// other Apply tests only prove indirectly (a restore can only work if a snapshot
+// already exists): Snapshot() runs strictly before Execute(), unconditionally --
+// even on a run whose Execute then fails and whose Apply returns a non-nil error
+// and a nil *Result. The snapshot is not an artifact of success; it is taken
+// because the operation is destructive, full stop.
+func TestApplySnapshotPrecedesDestructiveExecution(t *testing.T) {
+	const v1 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 1 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_code", "name": "code", "type": "text", "required": true }
+        ]}
+      ]
+    }`
+	reg, dir := setupReg(t, "tracker", v1)
+	// Two rows sharing a code: the unique index Execute tries to build will fail.
+	seedReg(t, reg, "tracker", "item", map[string]any{"code": "dup"})
+	seedReg(t, reg, "tracker", "item", map[string]any{"code": "dup"})
+
+	snapDir := filepath.Join(dir, SnapshotDirName)
+	if _, err := os.Stat(snapDir); !os.IsNotExist(err) {
+		t.Fatalf("snapshot dir must not exist before any destructive migration is attempted: err=%v", err)
+	}
+
+	const v2 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_code", "name": "code", "type": "text", "required": true, "unique": true }
+        ]}
+      ]
+    }`
+	res, err := Apply(context.Background(), reg, "tracker", []byte(v2), Options{Confirm: true})
+	if err == nil {
+		t.Fatal("adding a unique constraint over duplicates must fail")
+	}
+	if res != nil {
+		t.Fatalf("Apply should return a nil *Result on this failure path, got %+v", res)
+	}
+
+	// Despite the overall failure, the snapshot taken before Execute ran is still
+	// on disk: Snapshot() does not get unwound by a later Execute()/restore failure.
+	entries, err := os.ReadDir(snapDir)
+	if err != nil {
+		t.Fatalf("snapshot directory missing after a failed destructive migration: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no snapshot file found after a failed destructive migration -- Snapshot() must precede Execute() unconditionally")
+	}
+}
+
 func TestApplyNoChange(t *testing.T) {
 	reg, _ := setupReg(t, "tracker", applyV1)
 	res, err := Apply(context.Background(), reg, "tracker", []byte(applyV1), Options{})
