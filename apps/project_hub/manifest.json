@@ -1,0 +1,61 @@
+{
+  "app": { "id": "project_hub", "name": "Project Hub", "emoji": "🗂️", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_comment",
+      "name": "comment",
+      "operations": ["create", "read", "update"],
+      "fields": [
+        { "id": "fld_comment_body", "name": "body", "type": "text", "required": true, "min": 1, "max": 5000 },
+        { "id": "fld_comment_pinned", "name": "pinned", "type": "boolean", "default": false },
+        { "id": "fld_comment_task", "name": "task", "type": "reference", "required": true, "target": "ent_task", "onDelete": "cascade" }
+      ]
+    },
+    {
+      "id": "ent_task",
+      "name": "task",
+      "fields": [
+        { "id": "fld_task_title", "name": "title", "type": "text", "required": true, "min": 1, "max": 200 },
+        { "id": "fld_task_status", "name": "status", "type": "enum", "values": ["todo", "in_progress", "blocked", "done"], "default": "todo" },
+        { "id": "fld_task_priority", "name": "priority", "type": "integer", "min": 1, "max": 5, "default": 3 },
+        { "id": "fld_task_estimate", "name": "estimate_hours", "type": "real", "min": 0 },
+        { "id": "fld_task_completed", "name": "completed", "type": "boolean", "default": false },
+        { "id": "fld_task_due", "name": "due_at", "type": "datetime" },
+        { "id": "fld_task_project", "name": "project", "type": "reference", "required": true, "target": "ent_project", "onDelete": "cascade" },
+        { "id": "fld_task_parent", "name": "parent_task", "type": "reference", "target": "ent_task", "onDelete": "set_null" },
+        { "id": "fld_task_tag", "name": "tag", "type": "reference", "target": "ent_tag", "onDelete": "set_null" }
+      ]
+    },
+    {
+      "id": "ent_activity_log",
+      "name": "activity_log",
+      "operations": ["create", "read"],
+      "fields": [
+        { "id": "fld_log_action", "name": "action", "type": "enum", "required": true, "values": ["created", "status_changed", "commented", "completed", "reopened"] },
+        { "id": "fld_log_note", "name": "note", "type": "text", "max": 1000 },
+        { "id": "fld_log_task", "name": "task", "type": "reference", "required": true, "target": "ent_task", "onDelete": "restrict" },
+        { "id": "fld_log_project", "name": "project", "type": "reference", "target": "ent_project", "onDelete": "set_null" }
+      ]
+    },
+    {
+      "id": "ent_tag",
+      "name": "tag",
+      "fields": [
+        { "id": "fld_tag_name", "name": "name", "type": "text", "required": true, "unique": true, "min": 1, "max": 30 },
+        { "id": "fld_tag_color", "name": "color", "type": "enum", "values": ["red", "orange", "yellow", "green", "blue", "purple", "gray"], "default": "gray" }
+      ]
+    },
+    {
+      "id": "ent_project",
+      "name": "project",
+      "fields": [
+        { "id": "fld_project_name", "name": "name", "type": "text", "required": true, "unique": true, "max": 100 },
+        { "id": "fld_project_description", "name": "description", "type": "text", "max": 2000 },
+        { "id": "fld_project_status", "name": "status", "type": "enum", "values": ["planning", "active", "on_hold", "completed", "archived"], "default": "planning" },
+        { "id": "fld_project_budget", "name": "budget", "type": "real", "min": 0 },
+        { "id": "fld_project_starred", "name": "starred", "type": "boolean", "default": false },
+        { "id": "fld_project_deadline", "name": "deadline", "type": "datetime" }
+      ]
+    }
+  ]
+}

@@ -39,6 +39,12 @@ func semantic(app *schema.App) Errors {
 			}
 			fieldIDs[f.ID] = true
 
+			// A field id becomes a physical column name (D1), so it must not
+			// collide with a platform-managed column.
+			if isReserved(f.ID) {
+				errs = append(errs, Error{fpath + "/id", "reserved_id", fmt.Sprintf("field id %q is reserved by the platform", f.ID)})
+			}
+
 			if fieldNames[f.Name] {
 				errs = append(errs, Error{fpath + "/name", "duplicate_name", fmt.Sprintf("field name %q is not unique within entity %q", f.Name, ent.Name)})
 			}

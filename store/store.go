@@ -5,6 +5,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -14,6 +15,11 @@ import (
 
 	"pocketknife/schema"
 )
+
+// MinSQLiteVersion is the lowest SQLite version the runtime supports. The
+// migration engine depends on ALTER TABLE ... ADD/DROP COLUMN, which require
+// 3.35.0. It is asserted at boot (Open), so an underpowered build fails fast.
+const MinSQLiteVersion = "3.35.0"
 
 // Sentinel errors the API layer maps to HTTP status codes.
 var (
@@ -34,8 +40,13 @@ type Store struct {
 // foreign-key enforcement enabled on every connection. A single underlying
 // connection keeps writes serialised, which is the simplest correct choice for
 // SQLite and avoids "database is locked" under concurrent requests.
+//
+// WAL journal mode is enabled so the migration engine can take a consistent
+// snapshot by checkpointing the log into the main file before copying it (see
+// Checkpoint). On a clean Close, SQLite checkpoints and removes the -wal/-shm
+// sidecars, so the at-rest data.db is always complete.
 func Open(path string) (*Store, error) {
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -45,7 +56,46 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("ping %s: %w", path, err)
 	}
+	if err := assertSQLiteVersion(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db, path: path}, nil
+}
+
+// assertSQLiteVersion fails if the linked SQLite is older than MinSQLiteVersion.
+// The migration engine's ADD/DROP COLUMN support requires 3.35.0.
+func assertSQLiteVersion(db *sql.DB) error {
+	var v string
+	if err := db.QueryRow("SELECT sqlite_version();").Scan(&v); err != nil {
+		return fmt.Errorf("read sqlite version: %w", err)
+	}
+	if compareVersions(v, MinSQLiteVersion) < 0 {
+		return fmt.Errorf("sqlite %s is below the required minimum %s (ADD/DROP COLUMN need 3.35.0)", v, MinSQLiteVersion)
+	}
+	return nil
+}
+
+// compareVersions compares two dotted version strings numerically, returning -1,
+// 0, or 1. Missing components are treated as zero.
+func compareVersions(a, b string) int {
+	pa, pb := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(pa) || i < len(pb); i++ {
+		var x, y int
+		if i < len(pa) {
+			fmt.Sscanf(pa[i], "%d", &x)
+		}
+		if i < len(pb) {
+			fmt.Sscanf(pb[i], "%d", &y)
+		}
+		if x != y {
+			if x < y {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }
 
 // Path returns the database file path (used for isolation assertions/tests).
@@ -53,6 +103,21 @@ func (s *Store) Path() string { return s.path }
 
 // Close releases the database handle.
 func (s *Store) Close() error { return s.db.Close() }
+
+// Checkpoint flushes the write-ahead log into the main database file and
+// truncates the log, so a byte-for-byte copy of the database file is a complete,
+// consistent snapshot. It is a harmless no-op when the database is not in WAL
+// mode. The migration engine calls this immediately before snapshotting.
+func (s *Store) Checkpoint() error {
+	// wal_checkpoint returns a result row (busy, log, checkpointed); Query and
+	// discard it. An error here means the snapshot would be inconsistent, so it
+	// must propagate.
+	rows, err := s.db.Query("PRAGMA wal_checkpoint(TRUNCATE);")
+	if err != nil {
+		return fmt.Errorf("wal_checkpoint: %w", err)
+	}
+	return rows.Close()
+}
 
 // ApplyDDL runs schema DDL statements in order. Statements are idempotent
 // (CREATE TABLE/INDEX IF NOT EXISTS), so this is safe to run on every boot.
@@ -68,6 +133,63 @@ func (s *Store) ApplyDDL(stmts []string) error {
 	return nil
 }
 
+// RunMigration executes fn within the SQLite scaffold documented for changing a
+// table's schema by rebuild. Foreign-key enforcement is disabled on a single
+// pinned connection (it cannot be toggled inside a transaction), a transaction is
+// begun, fn runs its DDL/DML, and before commit a foreign_key_check verifies that
+// nothing was orphaned. On any error the transaction rolls back and the database
+// is left unchanged. Foreign keys are re-enabled before the connection is
+// returned, whatever the outcome.
+//
+// This gives schema-change atomicity at the SQLite level; the migration engine
+// layers a file snapshot on top for byte-exact recovery across the whole flow.
+func (s *Store) RunMigration(ctx context.Context, fn func(*sql.Tx) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=OFF;"); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer conn.ExecContext(ctx, "PRAGMA foreign_keys=ON;")
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := foreignKeyCheck(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
+}
+
+// foreignKeyCheck fails if the database has any foreign-key violation. Used as the
+// integrity gate just before a migration commits.
+func foreignKeyCheck(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check;")
+	if err != nil {
+		return fmt.Errorf("foreign_key_check: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return fmt.Errorf("%w: migration would leave foreign-key violations", ErrForeignKey)
+	}
+	return rows.Err()
+}
+
 // Insert writes a new row. values holds JSON-typed Go values keyed by field
 // name; the platform columns (id, created_at, updated_at) are supplied by the
 // caller via reserved keys. It returns the stored row, decoded back to JSON
@@ -78,13 +200,13 @@ func (s *Store) Insert(ent *schema.Entity, values map[string]any) (map[string]an
 	args := make([]any, 0, len(values))
 
 	for col, v := range values {
-		cols = append(cols, col)
+		cols = append(cols, physCol(ent, col))
 		placeholders = append(placeholders, "?")
 		args = append(args, encode(ent, col, v))
 	}
 
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
-		ent.Name, strings.Join(cols, ", "), strings.Join(placeholders, ", "))
+		ent.ID, strings.Join(cols, ", "), strings.Join(placeholders, ", "))
 	if _, err := s.db.Exec(query, args...); err != nil {
 		return nil, classify(err)
 	}
@@ -95,7 +217,7 @@ func (s *Store) Insert(ent *schema.Entity, values map[string]any) (map[string]an
 func (s *Store) GetByID(ent *schema.Entity, id string) (map[string]any, error) {
 	cols := selectColumns(ent)
 	query := fmt.Sprintf("SELECT %s FROM %s WHERE id = ? LIMIT 1;",
-		strings.Join(cols, ", "), ent.Name)
+		strings.Join(physColumns(ent, cols), ", "), ent.ID)
 	rows, err := s.db.Query(query, id)
 	if err != nil {
 		return nil, classify(err)
@@ -111,7 +233,7 @@ func (s *Store) GetByID(ent *schema.Entity, id string) (map[string]any, error) {
 // reference targets before a write.
 func (s *Store) Exists(ent *schema.Entity, id string) (bool, error) {
 	var one int
-	err := s.db.QueryRow(fmt.Sprintf("SELECT 1 FROM %s WHERE id = ? LIMIT 1;", ent.Name), id).Scan(&one)
+	err := s.db.QueryRow(fmt.Sprintf("SELECT 1 FROM %s WHERE id = ? LIMIT 1;", ent.ID), id).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -148,17 +270,15 @@ func (s *Store) List(ent *schema.Entity, q ListQuery) ([]map[string]any, int, er
 	where, args := buildWhere(ent, q.Filters)
 
 	var total int
-	countQ := fmt.Sprintf("SELECT COUNT(*) FROM %s%s;", ent.Name, where)
+	countQ := fmt.Sprintf("SELECT COUNT(*) FROM %s%s;", ent.ID, where)
 	if err := s.db.QueryRow(countQ, args...).Scan(&total); err != nil {
 		return nil, 0, classify(err)
 	}
 
 	cols := selectColumns(ent)
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "SELECT %s FROM %s%s", strings.Join(cols, ", "), ent.Name, where)
-	if order := buildOrderBy(q.Sorts); order != "" {
-		sb.WriteString(order)
-	}
+	fmt.Fprintf(&sb, "SELECT %s FROM %s%s", strings.Join(physColumns(ent, cols), ", "), ent.ID, where)
+	sb.WriteString(buildOrderBy(ent, q.Sorts))
 	sb.WriteString(" LIMIT ? OFFSET ?")
 	listArgs := append(append([]any{}, args...), q.Limit, q.Offset)
 
@@ -189,12 +309,12 @@ func (s *Store) Update(ent *schema.Entity, id string, values map[string]any) (ma
 	sets := make([]string, 0, len(values))
 	args := make([]any, 0, len(values)+1)
 	for col, v := range values {
-		sets = append(sets, col+" = ?")
+		sets = append(sets, physCol(ent, col)+" = ?")
 		args = append(args, encode(ent, col, v))
 	}
 	args = append(args, id)
 
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = ?;", ent.Name, strings.Join(sets, ", "))
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = ?;", ent.ID, strings.Join(sets, ", "))
 	res, err := s.db.Exec(query, args...)
 	if err != nil {
 		return nil, classify(err)
@@ -209,7 +329,7 @@ func (s *Store) Update(ent *schema.Entity, id string, values map[string]any) (ma
 
 // Delete removes a row, reporting whether one was deleted.
 func (s *Store) Delete(ent *schema.Entity, id string) (bool, error) {
-	res, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE id = ?;", ent.Name), id)
+	res, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE id = ?;", ent.ID), id)
 	if err != nil {
 		return false, classify(err)
 	}
@@ -218,6 +338,39 @@ func (s *Store) Delete(ent *schema.Entity, id string) (bool, error) {
 }
 
 // --- helpers ---
+
+// Physical identifiers (table and column names) are keyed by stable id, never by
+// the mutable display name. The store's public surface stays logical: callers
+// pass and receive maps keyed by field name, and physCol is the single point
+// that resolves a logical name to its physical column. Because the physical
+// column is the field's id, a rename (which changes only the name) maps to the
+// same column and therefore moves no data — this is the property the migration
+// engine relies on.
+//
+// physCol maps a logical column key to its physical SQLite column. The platform
+// columns (id, created_at, updated_at) are physical as-is; a declared field
+// resolves through its name to its stable id.
+func physCol(ent *schema.Entity, logical string) string {
+	switch logical {
+	case "id", "created_at", "updated_at":
+		return logical
+	}
+	if f := ent.Field(logical); f != nil {
+		return f.ID
+	}
+	// Unreachable for validated input: callers only pass known columns.
+	return logical
+}
+
+// physColumns maps a slice of logical column keys to physical columns, preserving
+// order.
+func physColumns(ent *schema.Entity, logical []string) []string {
+	phys := make([]string, len(logical))
+	for i, c := range logical {
+		phys[i] = physCol(ent, c)
+	}
+	return phys
+}
 
 func selectColumns(ent *schema.Entity) []string {
 	cols := make([]string, 0, len(ent.Fields)+3)
@@ -236,24 +389,26 @@ func buildWhere(ent *schema.Entity, filters []Filter) (string, []any) {
 	clauses := make([]string, 0, len(filters))
 	args := make([]any, 0, len(filters))
 	for _, f := range filters {
-		clauses = append(clauses, fmt.Sprintf("%s %s ?", f.Column, f.Operator))
+		clauses = append(clauses, fmt.Sprintf("%s %s ?", physCol(ent, f.Column), f.Operator))
 		args = append(args, encode(ent, f.Column, f.Value))
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
-func buildOrderBy(sorts []Sort) string {
-	if len(sorts) == 0 {
-		return ""
-	}
-	terms := make([]string, len(sorts))
-	for i, s := range sorts {
+// buildOrderBy renders the ORDER BY clause. The platform primary key `id` is
+// always appended as a final tiebreaker so that list and pagination output is
+// deterministic even when the user's sort keys tie (e.g. rows created within the
+// same millisecond sorted by created_at).
+func buildOrderBy(ent *schema.Entity, sorts []Sort) string {
+	terms := make([]string, 0, len(sorts)+1)
+	for _, s := range sorts {
 		dir := "ASC"
 		if s.Desc {
 			dir = "DESC"
 		}
-		terms[i] = s.Column + " " + dir
+		terms = append(terms, physCol(ent, s.Column)+" "+dir)
 	}
+	terms = append(terms, "id ASC")
 	return " ORDER BY " + strings.Join(terms, ", ")
 }
 

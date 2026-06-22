@@ -102,6 +102,18 @@ func (e *Entity) Field(name string) *Field {
 	return nil
 }
 
+// FieldByID returns the field with the given stable ID, or nil. The migration
+// engine matches fields across versions by ID (a rename keeps the ID), so it
+// resolves fields this way rather than by mutable name.
+func (e *Entity) FieldByID(id string) *Field {
+	for _, f := range e.Fields {
+		if f.ID == id {
+			return f
+		}
+	}
+	return nil
+}
+
 // Allows reports whether the entity exposes the given operation.
 func (e *Entity) Allows(op Operation) bool {
 	for _, o := range e.Operations {

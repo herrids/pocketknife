@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pocketknife/api"
 	"pocketknife/registry"
@@ -136,6 +137,11 @@ func TestReadingTrackerCRUD(t *testing.T) {
 		t.Fatalf("read title = %v", got.body["title"])
 	}
 
+	// Cross a millisecond boundary so the updated_at bump is observable at the
+	// canonical timestamp resolution (otherwise a fast create→update can share a
+	// millisecond and the bump, though it happened, is not visible).
+	time.Sleep(2 * time.Millisecond)
+
 	// Update (partial): bump rating, mark done.
 	updated := do(t, srv, "PATCH", "/apps/reading_tracker/book/"+id, map[string]any{
 		"rating": 4, "done": true,
@@ -192,11 +198,16 @@ func TestReadingTrackerListFilterSortPaginate(t *testing.T) {
 		t.Fatalf("filtered rows = %d, want 2", n)
 	}
 
-	// sort=-created_at returns newest first ("d").
-	s := do(t, srv, "GET", "/apps/reading_tracker/book?sort=-created_at", nil).wantStatus(t, 200)
-	first := s.body["data"].([]any)[0].(map[string]any)
-	if first["title"] != "d" {
-		t.Fatalf("sort newest-first first = %v, want d", first["title"])
+	// sort=-title returns titles in descending order ("d" first). Sorting on an
+	// explicit field keeps this assertion deterministic regardless of insert
+	// timing (created_at can tie within a millisecond).
+	s := do(t, srv, "GET", "/apps/reading_tracker/book?sort=-title", nil).wantStatus(t, 200)
+	data := s.body["data"].([]any)
+	if first := data[0].(map[string]any); first["title"] != "d" {
+		t.Fatalf("sort -title first = %v, want d", first["title"])
+	}
+	if last := data[len(data)-1].(map[string]any); last["title"] != "a" {
+		t.Fatalf("sort -title last = %v, want a", last["title"])
 	}
 
 	// pagination: total ignores limit/offset.

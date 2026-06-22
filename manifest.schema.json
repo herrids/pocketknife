@@ -27,7 +27,7 @@
   "$defs": {
     "stableId": {
       "type": "string",
-      "minLength": 1
+      "pattern": "^[a-z][a-z0-9_]*$"
     },
     "machineName": {
       "type": "string",

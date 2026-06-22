@@ -129,6 +129,37 @@ func TestRejectsBadName(t *testing.T) {
     }`)
 }
 
+func TestRejectsUnsafeStableID(t *testing.T) {
+	// Stable ids become physical SQLite identifiers (D1), so they must match the
+	// SQL-safe pattern. A hyphen and an uppercase letter are both rejected.
+	mustInvalid(t, `{
+      "app": { "id": "a", "name": "A", "version": 1 },
+      "entities": [{ "id": "ent-bad", "name": "x", "fields": [
+        { "id": "f", "name": "y", "type": "text" }
+      ]}]
+    }`)
+	mustInvalid(t, `{
+      "app": { "id": "a", "name": "A", "version": 1 },
+      "entities": [{ "id": "e", "name": "x", "fields": [
+        { "id": "Fld", "name": "y", "type": "text" }
+      ]}]
+    }`)
+}
+
+func TestRejectsReservedFieldID(t *testing.T) {
+	// A field id becomes a physical column name, so it must not collide with a
+	// platform-managed column.
+	errs := mustInvalid(t, `{
+      "app": { "id": "a", "name": "A", "version": 1 },
+      "entities": [{ "id": "e", "name": "x", "fields": [
+        { "id": "created_at", "name": "y", "type": "datetime" }
+      ]}]
+    }`)
+	if !hasCode(errs, "reserved_id") {
+		t.Fatalf("expected reserved_id error, got %v", errs)
+	}
+}
+
 func TestRejectsDuplicateIDs(t *testing.T) {
 	errs := mustInvalid(t, `{
       "app": { "id": "a", "name": "A", "version": 1 },
