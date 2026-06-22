@@ -146,6 +146,14 @@ func applyNativeOps(tx *sql.Tx, app *schema.App, ent *schema.Entity, ops []Opera
 			if err != nil {
 				return err
 			}
+			// Existing rows need a value for the new column. A field with a
+			// declared default backfills them via a DEFAULT clause — which is also
+			// what makes adding a NOT NULL column to a populated table legal in
+			// SQLite. (Required fields without a default take the rebuild path,
+			// which requires a backfill witness.)
+			if op.AfterField.HasDefault {
+				def += " DEFAULT " + sqlLiteral(op.AfterField.Default, op.AfterField.Type)
+			}
 			if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", ent.ID, def)); err != nil {
 				return fmt.Errorf("add field %s: %w", op.FieldID, err)
 			}
