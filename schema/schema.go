@@ -56,6 +56,9 @@ type App struct {
 	// Frontend points at this version's pre-built static bundle, or nil if the
 	// app declares no frontend (API-only).
 	Frontend *Frontend
+	// Functions are this app's sandboxed server-side functions, or nil if the
+	// app declares none.
+	Functions []*Function
 }
 
 // Frontend names a pre-built static asset bundle for this manifest version.
@@ -68,6 +71,76 @@ type Frontend struct {
 	// Entry is the file within Dist served for the root and for any path that
 	// does not match a real asset (SPA fallback). Defaults to "index.html".
 	Entry string
+}
+
+// Function is one declared sandboxed server-side function: a pre-compiled
+// WebAssembly module plus the capabilities the sandbox grants it. Pocketknife
+// never compiles functions on-box — Entry must already name a built .wasm
+// module, relative to the app's directory, mirroring how Frontend.Dist must
+// already be a built static bundle. The manifest only ever declares
+// capabilities; the sandbox is what actually enforces them.
+type Function struct {
+	ID           string
+	Name         string
+	Entry        string
+	Capabilities *Capabilities
+}
+
+// Capabilities is the closed set of host interfaces a function may use. There
+// is no escape hatch: the sandbox grants exactly these and nothing else,
+// regardless of what the function's code attempts.
+type Capabilities struct {
+	// Data grants access to specific entities, each restricted to a subset of
+	// that entity's own enabled operations.
+	Data []DataScope
+	// Network is the exact-match allow-listed set of hostnames a function may
+	// reach. There is no wildcard matching and no general fetch.
+	Network []string
+	// Model grants access to the model broker. The function never receives the
+	// underlying provider token.
+	Model bool
+}
+
+// DataScope grants a function access to one entity, restricted to the
+// declared operations on it.
+type DataScope struct {
+	// Entity is the target entity's stable ID.
+	Entity     string
+	Operations []Operation
+}
+
+// Allows reports whether the scope for the given entity ID permits op. It
+// returns false if the entity has no scope declared at all.
+func (c *Capabilities) Allows(entityID string, op Operation) bool {
+	if c == nil {
+		return false
+	}
+	for _, ds := range c.Data {
+		if ds.Entity != entityID {
+			continue
+		}
+		for _, o := range ds.Operations {
+			if o == op {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// AllowsDomain reports whether host is in the function's exact-match network
+// allow-list.
+func (c *Capabilities) AllowsDomain(host string) bool {
+	if c == nil {
+		return false
+	}
+	for _, d := range c.Network {
+		if d == host {
+			return true
+		}
+	}
+	return false
 }
 
 // Entity is a single table's worth of schema.
@@ -137,6 +210,26 @@ func (e *Entity) Allows(op Operation) bool {
 		}
 	}
 	return false
+}
+
+// Function returns the function with the given name, or nil.
+func (a *App) Function(name string) *Function {
+	for _, f := range a.Functions {
+		if f.Name == name {
+			return f
+		}
+	}
+	return nil
+}
+
+// FunctionByID returns the function with the given stable ID, or nil.
+func (a *App) FunctionByID(id string) *Function {
+	for _, f := range a.Functions {
+		if f.ID == id {
+			return f
+		}
+	}
+	return nil
 }
 
 // Entity returns the entity with the given name, or nil.

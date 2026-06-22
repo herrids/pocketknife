@@ -57,6 +57,63 @@ func semantic(app *schema.App) Errors {
 			errs = append(errs, validateField(fpath, app, ent, f)...)
 		}
 	}
+
+	fnIDs := map[string]bool{}
+	fnNames := map[string]bool{}
+	for fi, fn := range app.Functions {
+		fpath := fmt.Sprintf("/functions/%d", fi)
+
+		if fnIDs[fn.ID] {
+			errs = append(errs, Error{fpath + "/id", "duplicate_id", fmt.Sprintf("function id %q is not unique", fn.ID)})
+		}
+		fnIDs[fn.ID] = true
+
+		if fnNames[fn.Name] {
+			errs = append(errs, Error{fpath + "/name", "duplicate_name", fmt.Sprintf("function name %q is not unique", fn.Name)})
+		}
+		fnNames[fn.Name] = true
+
+		errs = append(errs, validateCapabilities(fpath+"/capabilities", app, fn)...)
+	}
+	return errs
+}
+
+// validateCapabilities checks that every declared data scope resolves to a
+// real entity in this manifest, is not repeated, and never requests an
+// operation the entity itself does not allow — a scope the sandbox could
+// never actually exercise is a manifest authoring mistake, not a runtime
+// concern.
+func validateCapabilities(path string, app *schema.App, fn *schema.Function) Errors {
+	var errs Errors
+	seenEntities := map[string]bool{}
+
+	for di, ds := range fn.Capabilities.Data {
+		dpath := fmt.Sprintf("%s/data/%d", path, di)
+
+		if seenEntities[ds.Entity] {
+			errs = append(errs, Error{dpath + "/entity", "duplicate_data_scope", fmt.Sprintf("entity %q is scoped more than once in function %q", ds.Entity, fn.Name)})
+		}
+		seenEntities[ds.Entity] = true
+
+		ent := app.EntityByID(ds.Entity)
+		if ent == nil {
+			errs = append(errs, Error{dpath + "/entity", "unresolved_reference", fmt.Sprintf("data scope entity %q does not resolve to an entity in this manifest", ds.Entity)})
+			continue
+		}
+		for _, op := range ds.Operations {
+			if !ent.Allows(op) {
+				errs = append(errs, Error{dpath + "/operations", "scope_exceeds_entity", fmt.Sprintf("function %q requests %q on entity %q, which the entity itself does not allow", fn.Name, op, ent.Name)})
+			}
+		}
+	}
+
+	seenDomains := map[string]bool{}
+	for ni, d := range fn.Capabilities.Network {
+		if seenDomains[d] {
+			errs = append(errs, Error{fmt.Sprintf("%s/network/%d", path, ni), "duplicate_domain", fmt.Sprintf("domain %q is repeated", d)})
+		}
+		seenDomains[d] = true
+	}
 	return errs
 }
 

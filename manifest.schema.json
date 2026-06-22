@@ -23,7 +23,11 @@
       "minItems": 1,
       "items": { "$ref": "#/$defs/entity" }
     },
-    "frontend": { "$ref": "#/$defs/frontend" }
+    "frontend": { "$ref": "#/$defs/frontend" },
+    "functions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/function" }
+    }
   },
   "$defs": {
     "frontend": {
@@ -34,6 +38,51 @@
         "dist": { "type": "string", "minLength": 1 },
         "entry": { "type": "string", "minLength": 1 }
       }
+    },
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "entry", "capabilities"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "name": { "$ref": "#/$defs/machineName" },
+        "entry": { "type": "string", "minLength": 1 },
+        "capabilities": { "$ref": "#/$defs/capabilities" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dataScope" }
+        },
+        "network": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/hostname" }
+        },
+        "model": { "type": "boolean" }
+      }
+    },
+    "dataScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity", "operations"],
+      "properties": {
+        "entity": { "$ref": "#/$defs/stableId" },
+        "operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 1,
+          "items": { "enum": ["create", "read", "update", "delete"] }
+        }
+      }
+    },
+    "hostname": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
     },
     "stableId": {
       "type": "string",
