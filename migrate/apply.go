@@ -105,7 +105,7 @@ func Apply(ctx context.Context, reg *registry.Registry, appID string, newManifes
 	if err := os.WriteFile(filepath.Join(ra.Dir, "manifest.json"), newManifest, 0o644); err != nil {
 		return nil, fmt.Errorf("migration applied but promoting manifest.json failed: %w", err)
 	}
-	reg.Register(&registry.RegisteredApp{Schema: newApp, Store: ra.Store, Dir: ra.Dir})
+	reg.Register(&registry.RegisteredApp{Schema: newApp, Store: ra.Store, Dir: ra.Dir, AssetDir: ra.AssetDir})
 
 	if snapPath != "" {
 		_ = Prune(snapDir, DefaultRetention)
@@ -128,7 +128,7 @@ func restoreInPlace(reg *registry.Registry, ra *registry.RegisteredApp, snapPath
 	if err != nil {
 		return fmt.Errorf("reopen store after restore: %w", err)
 	}
-	reg.Register(&registry.RegisteredApp{Schema: ra.Schema, Store: st, Dir: ra.Dir})
+	reg.Register(&registry.RegisteredApp{Schema: ra.Schema, Store: st, Dir: ra.Dir, AssetDir: ra.AssetDir})
 	return nil
 }
 

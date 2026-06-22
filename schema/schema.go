@@ -53,6 +53,21 @@ type App struct {
 	Emoji    string
 	Version  int
 	Entities []*Entity
+	// Frontend points at this version's pre-built static bundle, or nil if the
+	// app declares no frontend (API-only).
+	Frontend *Frontend
+}
+
+// Frontend names a pre-built static asset bundle for this manifest version.
+// Pocketknife never bundles on-box in this phase: Dist must already contain
+// the built HTML/JS/CSS output, relative to the app's directory.
+type Frontend struct {
+	// Dist is the path, relative to the app directory, of the built static
+	// asset directory (e.g. "frontend/dist").
+	Dist string
+	// Entry is the file within Dist served for the root and for any path that
+	// does not match a real asset (SPA fallback). Defaults to "index.html".
+	Entry string
 }
 
 // Entity is a single table's worth of schema.

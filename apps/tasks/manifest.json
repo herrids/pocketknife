@@ -18,5 +18,6 @@
         { "id": "fld_task_due",   "name": "due",      "type": "datetime" }
       ]
     }
-  ]
+  ],
+  "frontend": { "dist": "frontend/dist" }
 }
