@@ -11,8 +11,9 @@ import (
 // defaults that the manifest left implicit.
 
 type rawManifest struct {
-	App      rawApp      `json:"app"`
-	Entities []rawEntity `json:"entities"`
+	App      rawApp       `json:"app"`
+	Entities []rawEntity  `json:"entities"`
+	Frontend *rawFrontend `json:"frontend"`
 }
 
 type rawApp struct {
@@ -20,6 +21,11 @@ type rawApp struct {
 	Name    string `json:"name"`
 	Emoji   string `json:"emoji"`
 	Version int    `json:"version"`
+}
+
+type rawFrontend struct {
+	Dist  string `json:"dist"`
+	Entry string `json:"entry"`
 }
 
 type rawEntity struct {
@@ -102,6 +108,14 @@ func Parse(data []byte) (*App, error) {
 			ent.Fields = append(ent.Fields, f)
 		}
 		app.Entities = append(app.Entities, ent)
+	}
+
+	if raw.Frontend != nil {
+		entry := raw.Frontend.Entry
+		if entry == "" {
+			entry = "index.html"
+		}
+		app.Frontend = &Frontend{Dist: raw.Frontend.Dist, Entry: entry}
 	}
 	return app, nil
 }

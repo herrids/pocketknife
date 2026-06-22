@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Tasks</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 36rem; margin: 2rem auto; padding: 0 1rem; }
+    section { margin-bottom: 2rem; }
+    li { border-bottom: 1px solid #ddd; padding: 0.4rem 0; list-style: none; }
+    #error { color: #b00020; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <h1>✅ Tasks</h1>
+  <div id="error"></div>
+
+  <section>
+    <h2>Projects</h2>
+    <form id="new-project-form">
+      <input id="project-name" type="text" placeholder="Project name" required />
+      <button type="submit">Add project</button>
+    </form>
+    <ul id="projects"></ul>
+  </section>
+
+  <section>
+    <h2>Tasks</h2>
+    <form id="new-task-form">
+      <input id="task-title" type="text" placeholder="Task title" required />
+      <select id="task-project"></select>
+      <select id="task-priority">
+        <option value="low">low</option>
+        <option value="medium" selected>medium</option>
+        <option value="high">high</option>
+      </select>
+      <button type="submit">Add task</button>
+    </form>
+    <ul id="tasks"></ul>
+  </section>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

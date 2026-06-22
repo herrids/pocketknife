@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Gratitude Log</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    li { list-style: none; border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
+    time { display: block; font-size: 0.8rem; color: #666; }
+    #error { color: #b00020; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <h1>🙏 Gratitude Log</h1>
+  <form id="new-entry-form">
+    <input id="text" type="text" placeholder="What are you grateful for today?" required />
+    <button type="submit">Add</button>
+  </form>
+  <div id="error"></div>
+  <ul id="entries"></ul>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

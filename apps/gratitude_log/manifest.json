@@ -9,5 +9,6 @@
         { "id": "fld_text", "name": "text", "type": "text", "required": true }
       ]
     }
-  ]
+  ],
+  "frontend": { "dist": "frontend/dist" }
 }

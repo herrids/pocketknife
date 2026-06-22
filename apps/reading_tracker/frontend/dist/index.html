@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Reading Tracker</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    li { display: flex; align-items: center; gap: 0.5rem; border-bottom: 1px solid #ddd; padding: 0.5rem 0; }
+    li span { flex: 1; }
+    #error { color: #b00020; min-height: 1.2em; }
+    input#rating { width: 3rem; }
+  </style>
+</head>
+<body>
+  <h1>📚 Reading Tracker</h1>
+  <form id="new-book-form">
+    <input id="title" type="text" placeholder="Title" required />
+    <input id="author" type="text" placeholder="Author" />
+    <input id="rating" type="number" min="1" max="5" placeholder="Rating" />
+    <button type="submit">Add</button>
+  </form>
+  <div id="error"></div>
+  <ul id="books"></ul>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

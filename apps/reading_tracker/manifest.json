@@ -13,5 +13,6 @@
         { "id": "fld_finished_at", "name": "finished_at", "type": "datetime" }
       ]
     }
-  ]
+  ],
+  "frontend": { "dist": "frontend/dist" }
 }

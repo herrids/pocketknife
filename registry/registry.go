@@ -19,6 +19,10 @@ type RegisteredApp struct {
 	Schema *schema.App
 	Store  *store.Store
 	Dir    string
+	// AssetDir is the directory currently served as this app's frontend — the
+	// build pipeline's activation cutover target. Empty if the app has never
+	// been activated (API-only, or not yet built).
+	AssetDir string
 }
 
 // Registry is the hot path for requests: a concurrency-safe lookup from app ID
