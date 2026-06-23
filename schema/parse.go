@@ -11,9 +11,10 @@ import (
 // defaults that the manifest left implicit.
 
 type rawManifest struct {
-	App      rawApp       `json:"app"`
-	Entities []rawEntity  `json:"entities"`
-	Frontend *rawFrontend `json:"frontend"`
+	App       rawApp        `json:"app"`
+	Entities  []rawEntity   `json:"entities"`
+	Frontend  *rawFrontend  `json:"frontend"`
+	Functions []rawFunction `json:"functions"`
 }
 
 type rawApp struct {
@@ -33,6 +34,24 @@ type rawEntity struct {
 	Name       string     `json:"name"`
 	Operations []string   `json:"operations"`
 	Fields     []rawField `json:"fields"`
+}
+
+type rawFunction struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Entry        string          `json:"entry"`
+	Capabilities rawCapabilities `json:"capabilities"`
+}
+
+type rawCapabilities struct {
+	Data    []rawDataScope `json:"data"`
+	Network []string       `json:"network"`
+	Model   bool           `json:"model"`
+}
+
+type rawDataScope struct {
+	Entity     string   `json:"entity"`
+	Operations []string `json:"operations"`
 }
 
 type rawField struct {
@@ -117,6 +136,27 @@ func Parse(data []byte) (*App, error) {
 		}
 		app.Frontend = &Frontend{Dist: raw.Frontend.Dist, Entry: entry}
 	}
+
+	for _, rf := range raw.Functions {
+		fn := &Function{
+			ID:    rf.ID,
+			Name:  rf.Name,
+			Entry: rf.Entry,
+			Capabilities: &Capabilities{
+				Network: rf.Capabilities.Network,
+				Model:   rf.Capabilities.Model,
+			},
+		}
+		for _, rd := range rf.Capabilities.Data {
+			ds := DataScope{Entity: rd.Entity}
+			for _, op := range rd.Operations {
+				ds.Operations = append(ds.Operations, Operation(op))
+			}
+			fn.Capabilities.Data = append(fn.Capabilities.Data, ds)
+		}
+		app.Functions = append(app.Functions, fn)
+	}
+
 	return app, nil
 }
 
