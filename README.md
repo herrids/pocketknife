@@ -11,6 +11,15 @@ that app's database tables, and **register** its schema in an in-memory registry
 One set of CRUD/query handlers then serves every app; a handler looks an app up
 by id and serves it from its registered schema.
 
+Beyond that core, the same binary also: **evolves** an app's schema to a new
+manifest version without losing data (the migration engine), **builds and
+activates** an app's pre-built frontend with a single rollback contract (build &
+deploy), serves each app's activated UI from the same origin as its API (static
+assets), generates a **typed TypeScript client** from a manifest, and runs an
+app's declared **sandboxed server-side functions** in a capability-checked
+WebAssembly sandbox. Each is a separable concern with its own package; the core
+above does not depend on any of them.
+
 ## Contract / invariants
 
 - **One generic server, no per-app code.** No codegen, no per-app processes.
@@ -37,14 +46,22 @@ by id and serves it from its registered schema.
 ## Layout
 
 ```
-cmd/pocketknife   entrypoint (main)
+cmd/pocketknife   entrypoint (serve / migrate / build modes)
 schema/           manifest types + parser → schema model
 validate/         JSON-Schema structural + semantic checks (the hard gate)
 materialize/      schema → SQLite DDL
 store/            per-app SQLite connections, parameterized queries
 api/              generic CRUD + list handlers, query parser, error envelope
 registry/         in-memory app registry, boot loader
-apps/             example apps (manifests; data.db created at runtime)
+migrate/          schema diff → classify → witness → snapshot → execute
+build/            build & activation; second-deploy orchestration; platform DB
+assets/           serves each app's activated frontend bundle (/ui/)
+client/           typed TypeScript client generator (pure fn of the schema)
+sandbox/          capability-checked WebAssembly sandbox for functions
+broker/           the only path from a function to a model provider
+consent/          derives an app's union capability surface from the manifest
+cors/             optional dev-only cross-origin middleware
+apps/             example apps (manifests + frontend; data.db created at runtime)
 manifest.schema.json   canonical JSON Schema for the manifest format
 schema_embed.go        embeds manifest.schema.json into the binary
 ```
@@ -65,12 +82,30 @@ Then:
 make test                 # run the full test suite
 make run                  # serve apps/ on :8080
 make build                # build bin/pocketknife
-./bin/pocketknife -addr :8080 -apps apps
+make vet / make fmt       # go vet / go fmt
+```
+
+The binary has three modes. With no subcommand it **serves**; `migrate` and
+`build` are headless one-shot commands.
+
+```sh
+# serve (default): API + build-status + activated UIs over one origin
+./bin/pocketknife -addr :8080 -apps apps [-platform-db platform.db] [-cors]
+
+# migrate: evolve one app's schema to a new manifest version, no data loss
+./bin/pocketknife migrate -app <id> -to <new_manifest.json> [-confirm] [-witnesses <file.json>]
+
+# build: (re)build & activate the current frontend, or run a full second deploy
+./bin/pocketknife build -app <id> [-to <new_manifest.json>] [-confirm] [-witnesses <file.json>]
 ```
 
 On boot the server scans `apps/*/manifest.json`, validates each (skipping and
 logging any that fail), materializes each app's `data.db`, registers the schema,
-and serves. A restart re-derives the registry from disk and preserves all data.
+reconciles build state (failing any job interrupted by a restart and reattaching
+the active build per app), and serves. A restart re-derives the registry from
+disk and preserves all data. `-cors` enables permissive cross-origin headers for
+running a separate frontend dev server; the production binary serves the API and
+the built UI from one origin and never needs it.
 
 ## Manifest format
 
@@ -133,6 +168,48 @@ Rules:
 Datetimes are stored and emitted in one canonical encoding: ISO-8601 UTC with
 millisecond precision and a literal `Z` (e.g. `2026-06-21T15:21:58.940Z`).
 
+### Optional: `frontend` and `functions`
+
+Two optional top-level keys extend an app beyond a bare API. Both point at
+**pre-built** artifacts — pocketknife never compiles a frontend or a function
+on-box; the manifest only references output that already exists, relative to the
+app directory.
+
+```json
+{
+  "app": { "id": "tasks", "name": "Tasks", "emoji": "✅", "version": 1 },
+  "entities": [ ... ],
+  "frontend": { "dist": "frontend/dist", "entry": "index.html" },
+  "functions": [
+    {
+      "id": "fn_summarize",
+      "name": "summarize",
+      "entry": "functions/summarize.wasm",
+      "capabilities": {
+        "data":    [ { "entity": "ent_task", "operations": ["read"] } ],
+        "network": ["api.example.com"],
+        "model":   true
+      }
+    }
+  ]
+}
+```
+
+- **`frontend`** names a built static bundle. `dist` (required) is the asset
+  directory; `entry` (optional, default `index.html`) is the file served for the
+  root and for any path that doesn't match a real asset (SPA fallback). It is
+  served at `/ui/{app}/` once activated.
+- **`functions`** declares sandboxed server-side functions. `entry` must name an
+  already-built `.wasm` module. `capabilities` is the **closed** set of host
+  power the sandbox grants — and the manifest only ever *declares* it; the
+  sandbox is what enforces it:
+  - `data` — per-entity operation grants (referenced by the entity's stable id),
+    each restricted to a subset of that entity's enabled operations.
+  - `network` — an **exact-match** hostname allow-list. No wildcards, no general
+    fetch.
+  - `model` — access to the model broker. The function never receives the
+    underlying provider token.
+
 ## HTTP API
 
 All routes are namespaced by app: `/apps/{app_id}/{entity_name}`.
@@ -170,6 +247,17 @@ All routes are namespaced by app: `/apps/{app_id}/{entity_name}`.
 
 Body validation reuses the manifest's field rules: `required`, `min`/`max`,
 enum membership, and reference-target existence.
+
+### Other routes
+
+Alongside the per-app CRUD API, the serving binary mounts two more handlers
+(same JSON error envelope):
+
+| Method & path                  | Action |
+|--------------------------------|--------|
+| `GET /builds/{app}`            | every build job for an app, plus its durable activation pointer (read-only observability) |
+| `GET /builds/job/{id}`         | one build job by id |
+| `GET /ui/{app}/{path...}`      | the app's activated frontend bundle; unmatched paths fall back to the frontend's entry file (SPA routing) |
 
 ## curl examples
 
@@ -223,20 +311,94 @@ curl -s -X DELETE localhost:8080/apps/tasks/project/<project_id>
 curl -s localhost:8080/apps/tasks/task/<task_id>   # "project": null
 ```
 
-## Deferred (out of scope for v1)
+## Schema migrations (`migrate/`)
 
-These are intentionally **not** built. Clean seams are left where they plug in
-(notably `registry.Load`, where a `migrate(stored, new)` step would sit before an
-app is served), but nothing here is implemented, stubbed, or depended upon:
+Evolves one app from its on-disk manifest to a new version **without losing
+data**. `pocketknife migrate -app <id> -to <new.json>` runs the pipeline:
 
-- **Schema migrations / manifest versioning** beyond storing the version number.
-  Reconciling a changed manifest against an existing `data.db` is the future
-  migration engine's job.
-- A generated typed client.
-- Functions, a sandbox, or any capability system.
-- Any LLM / generation.
-- Authentication, users, sessions, multi-user, permissions.
-- The frontend shell, tiles, or any UI.
-- Real-time / subscriptions.
-- Query features beyond the small v1 surface (no OR, nesting, joins, or extra
-  operators/types).
+1. **validate** the new manifest (the same hard gate).
+2. **diff** old vs. new — a pure structural diff matched **entirely by stable
+   id**. A field whose id is unchanged but whose name differs is a *rename* and
+   moves no data; a new id is an *add*, a missing id is a *drop*.
+3. **classify** each operation as `safe` (information-preserving, auto-applied)
+   or `destructive` (information-losing). Classification reads only the
+   operation's structure — never a caller hint — and treats anything ambiguous
+   as destructive.
+4. destructive operations require an explicit **`-confirm`** *and* a
+   **witness** for each one (no default, no silent coercion). The witness
+   vocabulary is closed:
+   - `coerce` — a type narrowing (e.g. `real`→`integer`): `truncate`, `round`,
+     or `fail` the migration on any lossy value.
+   - `backfill` — a nullable→not-null tightening: the value written into
+     currently-null rows.
+   - `remap` — an enum value removed: how to rewrite rows still holding it.
+5. **snapshot** the database, then **execute** the whole changeset in one
+   transaction. Renames touch no SQL (the physical column is the field's stable
+   id); adds/drops use native `ADD`/`DROP COLUMN`; type/nullability/enum/
+   reference changes use the SQLite table-rebuild pattern. On any failure the
+   snapshot is restored and the prior registration kept.
+
+Witnesses are supplied via `-witnesses <file.json>`, a JSON object keyed by the
+stable **field id** the witness applies to.
+
+## Build & activation (`build/`)
+
+`pocketknife build` is the one entry point for landing a new state for an app.
+Job and activation state live in a separate **platform database**
+(`platform.db`, distinct from per-app `data.db`s); a job moves through
+`queued → building → activating → ready`, or to `failed`.
+
+- **`build -app <id>`** (no `-to`) — an *install*: (re)build and activate the
+  frontend for the app's current manifest version. No data change.
+- **`build -app <id> -to <new.json>`** — a *second deploy*: a data migration,
+  frontend rebuild, and activation landed as **one operation with a single
+  rollback contract**. Ordering is: snapshot data → migrate → build frontend →
+  activate; any failure rolls back to the prior good manifest, snapshot, and
+  activated build. The data side reuses `migrate` verbatim, so destructive
+  changes still need `-confirm` and witnesses.
+
+On boot the serving binary reconciles build state: any job interrupted by a
+restart is moved to `failed`, and each app's active build is reattached (or the
+app is served API-only if its activation pointer is stale).
+
+## Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
+
+A function's manifest entry only *declares* capabilities; `sandbox/` is the real
+boundary that *enforces* them. Each function body is treated as adversarial: it
+runs as a WebAssembly module under wazero with **no filesystem, no environment,
+no raw network**, behind a fixed, capability-checked host ABI (the `pocketknife`
+host module) that is the only way out. Per-invocation resource limits apply
+(linear memory, a wall-clock timeout, input/output byte caps). The three gated
+host calls (`data_call`, `network_fetch`, `model_call`) return sentinel codes; a
+denial carries no payload, so a function can't use responses as an oracle for
+capabilities it wasn't granted.
+
+`broker/` is the **only** path from a function to a model provider: the provider
+token is read once from the environment, held unexported, and never reaches a
+function or the browser. `consent/` derives the union of every function's
+declared capabilities for an app — a pure function of the manifest — so a future
+shell can show the full capability surface before the app is allowed to run.
+
+## Typed client (`client/`)
+
+`client.Generate` renders a self-contained TypeScript module (entity types + a
+typed client mirroring the CRUD/list surface, URL scheme, query syntax, JSON
+shapes and error envelope) from a validated schema model. It is a pure function
+of the `*schema.App`: an unchanged manifest produces byte-identical output, so
+regenerating is a no-op diff.
+
+## Deferred (still out of scope)
+
+Intentionally **not** built:
+
+- **On-box compilation.** Pocketknife references pre-built frontends and `.wasm`
+  functions; it never bundles or compiles them itself.
+- **LLM-authored manifests / changesets.** Migrations are derived structurally;
+  there is a deliberate seam where a model-proposed, annotated changeset would be
+  *verified* against the structural ground truth, but nothing authors one.
+- **Authentication, users, sessions, multi-user, permissions.**
+- **A frontend shell / tiles** (the host UI that would render `consent`'s
+  capability surface and switch between apps).
+- **Real-time / subscriptions.**
+- **Query features beyond the v1 surface** — no OR, nesting, joins, or extra
+  operators/types.
