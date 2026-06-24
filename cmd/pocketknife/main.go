@@ -25,6 +25,7 @@ import (
 	"pocketknife/cors"
 	"pocketknife/migrate"
 	"pocketknife/registry"
+	"pocketknife/validateapi"
 )
 
 func main() {
@@ -97,6 +98,7 @@ func runServe(args []string) {
 	mux.Handle("/apps/", api.NewServer(reg))
 	mux.Handle("/builds/", build.NewStatusServer(bst, reg))
 	mux.Handle("/ui/", assets.NewServer(reg))
+	mux.Handle("/validate", validateapi.NewServer())
 
 	handler := cors.Middleware(*corsEnabled, mux)
 	log.Printf("pocketknife listening on %s (apps dir: %s)", *addr, *appsDir)
