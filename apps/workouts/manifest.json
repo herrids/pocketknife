@@ -1,0 +1,40 @@
+{
+  "app": { "id": "workouts", "name": "Training", "emoji": "🏋️", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_workout",
+      "name": "workout",
+      "operations": ["create", "read", "update", "delete"],
+      "fields": [
+        { "id": "fld_wo_date",      "name": "date",          "type": "datetime", "required": true },
+        { "id": "fld_wo_title",     "name": "title",         "type": "text", "max": 120 },
+        { "id": "fld_wo_type",      "name": "type",          "type": "enum", "values": ["hyrox", "strength", "running", "mixed", "other"], "default": "mixed" },
+        { "id": "fld_wo_total",     "name": "total_seconds", "type": "integer", "min": 0 },
+        { "id": "fld_wo_rpe",       "name": "rpe",           "type": "integer", "min": 1, "max": 10 },
+        { "id": "fld_wo_bodyweight","name": "bodyweight_kg", "type": "real", "min": 0 },
+        { "id": "fld_wo_completed", "name": "completed",     "type": "boolean", "default": false },
+        { "id": "fld_wo_notes",     "name": "notes",         "type": "text", "max": 1000 }
+      ]
+    },
+    {
+      "id": "ent_exercise",
+      "name": "exercise",
+      "operations": ["create", "read", "update", "delete"],
+      "fields": [
+        { "id": "fld_ex_workout",   "name": "workout",      "type": "reference", "target": "ent_workout", "onDelete": "cascade" },
+        { "id": "fld_ex_position",  "name": "position",     "type": "integer", "min": 1 },
+        { "id": "fld_ex_kind",      "name": "kind",         "type": "enum", "required": true, "values": ["run", "hyrox_station", "strength", "cardio", "mobility", "other"] },
+        { "id": "fld_ex_name",      "name": "name",         "type": "text", "max": 120 },
+        { "id": "fld_ex_station",   "name": "station",      "type": "enum", "values": ["ski_erg", "sled_push", "sled_pull", "burpee_broad_jump", "row", "farmers_carry", "sandbag_lunges", "wall_balls"] },
+        { "id": "fld_ex_sets",      "name": "sets",         "type": "integer", "min": 0 },
+        { "id": "fld_ex_reps",      "name": "reps",         "type": "integer", "min": 0 },
+        { "id": "fld_ex_weight",    "name": "weight_kg",    "type": "real", "min": 0 },
+        { "id": "fld_ex_distance",  "name": "distance_m",   "type": "integer", "min": 0 },
+        { "id": "fld_ex_seconds",   "name": "seconds",      "type": "integer", "min": 0 },
+        { "id": "fld_ex_rest",      "name": "rest_seconds", "type": "integer", "min": 0 },
+        { "id": "fld_ex_pb",        "name": "personal_best","type": "boolean", "default": false }
+      ]
+    }
+  ],
+  "frontend": { "dist": "frontend/out" }
+}
