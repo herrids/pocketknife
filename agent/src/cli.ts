@@ -9,6 +9,7 @@
 import { createInterface } from "node:readline/promises";
 import { readFile } from "node:fs/promises";
 
+import { shutdownTracing } from "./tracing.js";
 import { Orchestrator } from "./orchestrator.js";
 
 function parseArgs(argv: string[]): { prompt: string; pasteFile?: string } {
@@ -69,7 +70,9 @@ async function main(): Promise<void> {
   console.log(`\nSubmitted. appId: ${result.appId}`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exitCode = 1;
-});
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => shutdownTracing());
