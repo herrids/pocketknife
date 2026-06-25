@@ -10,3 +10,6 @@ data.db
 
 # Go test/coverage artifacts
 *.out
+
+
+.env
