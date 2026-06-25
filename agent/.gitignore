@@ -1,0 +1,6 @@
+node_modules/
+dist/
+out/
+.scratch/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
