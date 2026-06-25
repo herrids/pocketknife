@@ -7,8 +7,9 @@
 // prompt or the model's judgment fails. The actual `vite build` runs afterward
 // as plain orchestrator code (build-frontend.ts), never as a tool the model holds.
 
-import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
+import { query } from "./tracing.js";
 import { createScratchGuard } from "./hooks/scratch-guard.js";
 
 const PROMPT = `Your current directory holds a complete Vite + React + TypeScript + Tailwind +

@@ -9,8 +9,9 @@
 // conversation; ready_to_build is just how it reports that intent without
 // being able to act on it itself.
 
-import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
+import { query } from "./tracing.js";
 import type { Validator } from "./seams/validator.js";
 import { createPocketknifeMcpServer, type ValidatedManifest } from "./tools/validate-tool.js";
 

@@ -13,6 +13,7 @@ import { Planner } from "./planner.js";
 import { runBuilder } from "./builder.js";
 import { buildFrontend } from "./build-frontend.js";
 import { selectValidator, selectSubmitter } from "./seams/select.js";
+import { withJobTrace } from "./tracing.js";
 import type { Submitter } from "./seams/submitter.js";
 import type { Validator } from "./seams/validator.js";
 import type { ValidatedManifest } from "./tools/validate-tool.js";
@@ -54,11 +55,11 @@ export class Orchestrator {
   }
 
   async startPlanning(prompt: string, pastedCode?: string): Promise<void> {
-    await this.planner.start(prompt, pastedCode);
+    await withJobTrace(this.jobId, "planner", () => this.planner.start(prompt, pastedCode));
   }
 
   async refinePlan(userText: string): Promise<void> {
-    await this.planner.refine(userText);
+    await withJobTrace(this.jobId, "planner", () => this.planner.refine(userText));
   }
 
   /** True once the planner has reported (via ready_to_build) that the user wants to proceed. */
@@ -91,8 +92,10 @@ export class Orchestrator {
     await writeFile(path.join(this.scratchDir, "manifest.json"), JSON.stringify(this.lastValid.manifest, null, 2));
     await writeFile(path.join(this.scratchDir, "src", "client.ts"), this.lastValid.client);
 
-    await runBuilder(this.scratchDir, { onText: this.callbacks.onBuilderText });
-    await buildFrontend(this.scratchDir, { onText: this.callbacks.onBuilderText });
+    await withJobTrace(this.jobId, "builder", async () => {
+      await runBuilder(this.scratchDir, { onText: this.callbacks.onBuilderText });
+      await buildFrontend(this.scratchDir, { onText: this.callbacks.onBuilderText });
+    });
   }
 
   /** The one irreversible action. Never call this from inside the planner or builder loop. */

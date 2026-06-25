@@ -134,6 +134,26 @@ interfaces and has no idea which implementation is behind them.
 - `SUBMIT_MODE=http` → `HttpSubmitter`, intended for a multipart POST to the Go
   control plane, idempotency-keyed on `jobId` — **not implemented yet** (throws).
 
+## Observability: optional Langfuse tracing
+
+`tracing.ts` is the single place that decides whether `query()` calls get
+instrumented, mirroring the seam pattern above: enabled only when
+`LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set (see `.env.example`),
+otherwise `query` is the SDK's own export, untouched. When enabled, it wraps
+the SDK's `query` with OpenInference's Claude Agent SDK instrumentation,
+backed by a `LangfuseSpanProcessor`-registered `NodeTracerProvider`.
+`planner.ts` and `builder.ts` import `query` from here instead of from the SDK
+directly, so both sessions always get whichever variant this module decided
+to hand out. Each `query()` turn becomes an OpenInference AGENT span with
+child TOOL spans per tool call (`validate_manifest`, `ready_to_build`,
+`Read`/`Write`/`Edit`/...). `orchestrator.ts` wraps `startPlanning`/
+`refinePlan` and `build()` in `withJobTrace(jobId, name, fn)`, which tags
+every span created during `fn` with the job's `jobId` as the Langfuse session
+id — so the planner's turns and the builder's run (including any self-heal
+fix session inside `build-frontend.ts`) for one job group together under one
+session in the Langfuse UI. `cli.ts` calls `shutdownTracing()` on exit to
+flush buffered spans before the process ends.
+
 ## Why two sessions, not one
 
 | | Planner | Builder |
