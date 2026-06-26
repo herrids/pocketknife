@@ -21,7 +21,14 @@ export const query: typeof ClaudeAgentSDKModule.query = enabled ? patchQuery() :
 
 function patchQuery(): typeof ClaudeAgentSDKModule.query {
   provider = new NodeTracerProvider({
-    spanProcessors: [new LangfuseSpanProcessor()],
+    // LangfuseSpanProcessor's default shouldExportSpan only lets through spans
+    // tagged with the "langfuse" or "openinference" (exact) scope name, or
+    // gen_ai.* attributes -- none of which match this instrumentation's actual
+    // scope ("@arizeai/openinference-instrumentation-claude-agent-sdk") or its
+    // OpenInference-shaped (not gen_ai.*) attributes. Without this override every
+    // span is silently dropped before export. This provider exists solely for
+    // these spans, so exporting unconditionally is safe.
+    spanProcessors: [new LangfuseSpanProcessor({ shouldExportSpan: () => true })],
   });
   provider.register();
 
