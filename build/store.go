@@ -124,6 +124,13 @@ CREATE TABLE IF NOT EXISTS active_builds (
 	asset_dir TEXT NOT NULL,
 	manifest_version INTEGER NOT NULL,
 	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deploy_requests (
+	external_job_id TEXT PRIMARY KEY,
+	app_id TEXT NOT NULL,
+	manifest_version INTEGER NOT NULL,
+	url TEXT NOT NULL,
+	created_at TEXT NOT NULL
 );`
 	if _, err := db.Exec(ddl); err != nil {
 		return fmt.Errorf("apply platform ddl: %w", err)
@@ -288,6 +295,54 @@ func (s *Store) ActiveBuildFor(appID string) (*ActiveBuild, error) {
 		return nil, fmt.Errorf("active build for %s: %w", appID, err)
 	}
 	return &ab, nil
+}
+
+// DeployRecord is the durable, idempotent outcome of one externally-keyed
+// deploy request (the agent's jobId) that completed successfully.
+type DeployRecord struct {
+	ExternalJobID   string
+	AppID           string
+	ManifestVersion int
+	URL             string
+	CreatedAt       string
+}
+
+// RecordDeployRequest durably remembers a successful deploy's outcome keyed
+// by the caller's external job id, so a retried request for the same id
+// short-circuits to this result instead of deploying a second time.
+func (s *Store) RecordDeployRequest(rec DeployRecord) error {
+	if rec.CreatedAt == "" {
+		rec.CreatedAt = store.NowUTC()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO deploy_requests (external_job_id, app_id, manifest_version, url, created_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(external_job_id) DO UPDATE SET app_id = excluded.app_id,
+			manifest_version = excluded.manifest_version, url = excluded.url`,
+		rec.ExternalJobID, rec.AppID, rec.ManifestVersion, rec.URL, rec.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("record deploy request %s: %w", rec.ExternalJobID, err)
+	}
+	return nil
+}
+
+// DeployRequestByExternalID returns the recorded outcome for an external job
+// id, or nil if no deploy has ever completed successfully under that id.
+func (s *Store) DeployRequestByExternalID(externalJobID string) (*DeployRecord, error) {
+	row := s.db.QueryRow(
+		`SELECT external_job_id, app_id, manifest_version, url, created_at FROM deploy_requests WHERE external_job_id = ?`,
+		externalJobID,
+	)
+	var rec DeployRecord
+	err := row.Scan(&rec.ExternalJobID, &rec.AppID, &rec.ManifestVersion, &rec.URL, &rec.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("deploy request %s: %w", externalJobID, err)
+	}
+	return &rec, nil
 }
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanJob serves both Get and

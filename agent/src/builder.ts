@@ -9,7 +9,7 @@
 
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
-import { query } from "./tracing.js";
+import { runQueryWithRetry } from "./query-retry.js";
 import { createScratchGuard } from "./hooks/scratch-guard.js";
 
 const PROMPT = `Your current directory holds a complete Vite + React + TypeScript + Tailwind +
@@ -50,13 +50,13 @@ export function sandboxedBuilderOptions(scratchDir: string): Options {
   };
 }
 
-/** Streams an SDK query's assistant text to the callback. */
+/** Streams an SDK query's assistant text to the callback, retrying through a dropped connection. */
 export async function streamQuery(
   prompt: string,
   options: Options,
   onText?: (text: string) => void,
 ): Promise<void> {
-  for await (const message of query({ prompt, options })) {
+  await runQueryWithRetry(prompt, options, (message) => {
     if (message.type === "assistant") {
       for (const block of message.message.content) {
         if (block.type === "text") {
@@ -64,7 +64,7 @@ export async function streamQuery(
         }
       }
     }
-  }
+  });
 }
 
 export async function runBuilder(scratchDir: string, callbacks: BuilderCallbacks = {}): Promise<void> {

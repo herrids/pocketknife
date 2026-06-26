@@ -120,7 +120,7 @@ only irreversible step. Nothing the models do can submit an app on its own.
    `submit()` lives in orchestrator code only — never behind a model-callable
    tool, never inside the planner or builder loop.
 
-## The seam: stub today, real Go backend later
+## The seam: stub by default, real Go backend on opt-in
 
 `seams/select.ts` is the **only** place that reads `VALIDATE_MODE`, `SUBMIT_MODE`,
 and `GO_BASE_URL`. Everything else depends on the `Validator`/`Submitter`
@@ -131,8 +131,19 @@ interfaces and has no idea which implementation is behind them.
   against the real `validateapi.NewServer()` in the Go backend — **not implemented
   yet** (throws).
 - `SUBMIT_MODE=stub` (default) → `StubSubmitter`, writes to `agent/out/`.
-- `SUBMIT_MODE=http` → `HttpSubmitter`, intended for a multipart POST to the Go
-  control plane, idempotency-keyed on `jobId` — **not implemented yet** (throws).
+- `SUBMIT_MODE=http` → `HttpSubmitter`: gzip-tars the scratch build's `dist/`
+  and POSTs it, plus the validated manifest, as `multipart/form-data` to
+  `{GO_BASE_URL}/deploy`, idempotency-keyed on the orchestrator's `jobId`. That
+  endpoint is `deployapi.NewServer()` in the Go backend: it installs a
+  brand-new app id live (open store, materialize DDL, register, activate the
+  frontend) or redeploys an already-known one through the existing build
+  pipeline, then responds with the deployed `appId` and its reachable
+  `/ui/<app_id>/` URL — which `submit()` returns as `{appId}`. A retried POST
+  for a `jobId` that already succeeded short-circuits to the same result
+  instead of deploying twice. The agent never authenticates this call; the
+  endpoint trusts its caller (see the Go repo's
+  `openspec/changes/wire-agent-to-backend-deploy/design.md` Open Questions for
+  the planned auth follow-up).
 
 ## Observability: optional Langfuse tracing
 

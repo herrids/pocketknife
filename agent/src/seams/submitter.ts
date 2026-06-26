@@ -3,11 +3,12 @@
 // orchestrator code, never behind a model-callable tool.
 //
 // Stub (today): tar/copy the bundle into ./out/<jobId>/.
-// HTTP (later): multipart POST to the Go control plane, idempotency-keyed on
-// jobId.
+// HTTP (today): multipart POST to the Go control plane's POST /deploy,
+// idempotency-keyed on jobId -- see deployapi.NewServer() in the Go backend.
 
 import { mkdir, rm, writeFile, readdir, cp, stat } from "node:fs/promises";
 import path from "node:path";
+import * as tar from "tar";
 
 export interface SubmitInput {
   jobId: string;
@@ -62,9 +63,54 @@ export class StubSubmitter implements Submitter {
 export class HttpSubmitter implements Submitter {
   constructor(private readonly baseUrl: string) {}
 
-  async submit(_input: SubmitInput): Promise<SubmitResult> {
-    throw new Error("HttpSubmitter not implemented yet");
+  async submit(input: SubmitInput): Promise<SubmitResult> {
+    // Ship the built bundle, not the source -- same contract as StubSubmitter.
+    const distDir = path.join(input.scratchDir, "dist");
+    const distStat = await stat(distDir).catch(() => undefined);
+    if (!distStat?.isDirectory()) {
+      throw new Error(`no built frontend at ${distDir} -- the build step must run before submit`);
+    }
+
+    const bundle = await packBundle(distDir);
+
+    const form = new FormData();
+    form.set("jobId", input.jobId);
+    form.set("manifest", new Blob([JSON.stringify(input.manifest)], { type: "application/json" }), "manifest.json");
+    form.set("bundle", new Blob([bundle], { type: "application/gzip" }), "bundle.tar.gz");
+
+    const url = `${this.baseUrl}/deploy`;
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "POST", body: form });
+    } catch (err) {
+      throw new Error(`deploy request to ${url} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const body = await res.json().catch(() => undefined);
+    if (!res.ok) {
+      const message = (body as { error?: { message?: string } } | undefined)?.error?.message;
+      throw new Error(`deploy to ${url} failed (${res.status}): ${message ?? "no error detail returned"}`);
+    }
+
+    const appId = (body as { appId?: unknown } | undefined)?.appId;
+    if (typeof appId !== "string" || appId.length === 0) {
+      throw new Error(`deploy to ${url} succeeded but returned no appId: ${JSON.stringify(body)}`);
+    }
+    return { appId };
   }
+}
+
+// packBundle tars and gzips distDir's contents in place -- entries are paths
+// relative to distDir itself (e.g. "index.html", "assets/app.js"), matching
+// what the backend's bundle extractor expects to land directly under an
+// app's served dist/ directory.
+async function packBundle(distDir: string): Promise<Buffer> {
+  const stream = tar.create({ cwd: distDir, gzip: true }, ["."]);
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function listFilesRecursive(dir: string, root: string): Promise<string[]> {

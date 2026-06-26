@@ -11,7 +11,7 @@
 
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 
-import { query } from "./tracing.js";
+import { runQueryWithRetry } from "./query-retry.js";
 import type { Validator } from "./seams/validator.js";
 import { createPocketknifeMcpServer, type ValidatedManifest } from "./tools/validate-tool.js";
 
@@ -85,11 +85,7 @@ export class Planner {
       ...(this.sessionId ? { resume: this.sessionId } : {}),
     };
 
-    for await (const message of query({ prompt, options })) {
-      if (message.type === "system" && message.subtype === "init") {
-        this.sessionId = message.session_id;
-        continue;
-      }
+    const { sessionId } = await runQueryWithRetry(prompt, options, (message) => {
       if (message.type === "assistant") {
         for (const block of message.message.content) {
           if (block.type === "text") {
@@ -97,7 +93,8 @@ export class Planner {
           }
         }
       }
-    }
+    });
+    if (sessionId) this.sessionId = sessionId;
   }
 }
 

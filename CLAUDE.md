@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Pocketknife is a single, generic, schema-driven HTTP backend written in Go. One server turns a declarative **manifest** (`apps/<app_id>/manifest.json`) into a working API + SQLite database — no per-app code generation, no per-app process. `README.md` is the authoritative spec for the v1 runtime (manifest format, type set, HTTP API, query syntax, error envelope); read it for those details rather than re-deriving them. Note that the README's "Deferred / out of scope for v1" list is **stale** — migrations, a typed client, sandboxed functions, a model broker, and frontend serving are now all implemented (see Architecture).
+Pocketknife is a single, generic, schema-driven HTTP backend written in Go. One server turns a declarative **manifest** (`apps/<app_id>/manifest.json`) into a working API + SQLite database — no per-app code generation, no per-app process. `README.md` is the authoritative spec for the v1 runtime (manifest format, type set, HTTP API, query syntax, error envelope); read it for those details rather than re-deriving them. Note that the README's "Deferred / out of scope for v1" list is **stale** — migrations, a typed client, sandboxed functions, a model broker, frontend serving, and an agent-to-backend deploy wire are now all implemented (see Architecture).
+
+`agent/` is a separate Node/TypeScript process: a Claude Agent SDK planner+builder that authors a manifest and frontend conversationally, then — on explicit user approval, never on its own — submits the result to this Go backend's `POST /deploy` (`deployapi/`) over HTTP, gated by `SUBMIT_MODE=http`. The two halves communicate only over that HTTP seam; the agent never touches this repo's filesystem, database, or registry directly. See `agent/FLOW.md` for the agent's own architecture.
 
 ## Commands
 
@@ -45,7 +47,11 @@ Evolves one app from its on-disk manifest to a new version without data loss. Pi
 
 ### Build & activation (`build/`)
 
-`build.Deploy` is the one entry point for both: `Kind=install` (build + activate a frontend for the current manifest) and `Kind=deploy` (a "second deploy" — data migration + frontend rebuild + activation as one operation with a single rollback contract). Ordering: snapshot data → migrate → build frontend → activate; any failure rolls back to the prior good manifest, snapshot, and activated build. Build-job state and the durable activation pointer live in a separate **platform database** (`platform.db`, distinct from per-app `data.db`s). `build.Reconcile` runs on every boot to fail interrupted jobs and reattach active builds. `build.NewStatusServer` serves read-only job/activation status at `/builds/`.
+`build.Deploy` is the one entry point for both: `Kind=install` (build + activate a frontend for the current manifest) and `Kind=deploy` (a "second deploy" — data migration + frontend rebuild + activation as one operation with a single rollback contract). Ordering: snapshot data → migrate → build frontend → activate; any failure rolls back to the prior good manifest, snapshot, and activated build. Build-job state and the durable activation pointer live in a separate **platform database** (`platform.db`, distinct from per-app `data.db`s). `build.Reconcile` runs on every boot to fail interrupted jobs and reattach active builds. `build.NewStatusServer` serves read-only job/activation status at `/builds/`. `build.Bootstrap` is the first-install half `Deploy` doesn't cover: it brings a brand-new, not-yet-registered app id from a manifest + bundle to a live, activated app (stage under a temp name → materialize → build frontend → rename into place → register), used by `deployapi`.
+
+### Deploy ingest (`deployapi/`)
+
+`deployapi.NewServer` serves `POST /deploy`: the HTTP seam the `agent/` planner/builder submits an approved app through (its `HttpSubmitter`, gated by `SUBMIT_MODE=http`). One multipart request (`jobId`, `manifest`, gzipped-tar `bundle`) routes to `build.Bootstrap` for an unknown app id or `build.Deploy` for a known one, is idempotent on `jobId`, serializes concurrent requests per app id, and contains bundle extraction against path traversal/symlinks/size limits (`build.ExtractBundle`). Not authenticated — a deliberate, separately-tracked gap.
 
 ### Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
 

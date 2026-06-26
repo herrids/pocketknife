@@ -258,6 +258,7 @@ Alongside the per-app CRUD API, the serving binary mounts two more handlers
 | `GET /builds/{app}`            | every build job for an app, plus its durable activation pointer (read-only observability) |
 | `GET /builds/job/{id}`         | one build job by id |
 | `GET /ui/{app}/{path...}`      | the app's activated frontend bundle; unmatched paths fall back to the frontend's entry file (SPA routing) |
+| `POST /deploy`                 | ingest an approved manifest + built frontend bundle (`multipart/form-data`: `jobId`, `manifest`, `bundle`); installs a new app or redeploys an existing one — see "Deploy ingest" below |
 
 ## curl examples
 
@@ -360,6 +361,38 @@ Job and activation state live in a separate **platform database**
 On boot the serving binary reconciles build state: any job interrupted by a
 restart is moved to `failed`, and each app's active build is reattached (or the
 app is served API-only if its activation pointer is stale).
+
+## Deploy ingest (`deployapi/`)
+
+`POST /deploy` is how an external authoring tool — today, the `agent/`
+planner/builder — lands an approved app without filesystem or CLI access to
+the server. It accepts one `multipart/form-data` request (`jobId` field,
+`manifest` part, gzipped-tar `bundle` part of the built frontend's `dist/`
+tree) and routes it one of two ways:
+
+- **Unknown app id** → `build.Bootstrap`: stages a fresh `apps/<app_id>/`
+  under a temp name, materializes its database, builds and activates the
+  bundle, then renames into place and registers the app live — all inside one
+  build job. A failure at any point removes the staging directory; nothing
+  partial is ever registered or served.
+- **Known app id** → the bundle is written into that app's directory and the
+  request is routed through the existing `build.Deploy` (install or, for a new
+  manifest version, a full second deploy), reusing its single rollback
+  contract.
+
+The endpoint is idempotent on `jobId` (a repeated request for an already-
+deployed job returns the cached `{appId, version, url}` instead of deploying
+again) and serializes concurrent requests for the same app id. A manifest
+that omits a `frontend` block gets one injected by default
+(`{"dist":"dist","entry":"index.html"}`) — the agent's manifests only ever
+describe the data schema, never the bundle's on-disk location. The bundle's
+asset URLs must already be relative (Vite's `base: "./"`) since this endpoint
+never rewrites paths; see `agent/templates/frontend/vite.config.ts`. The
+endpoint does **not** authenticate its caller — it trusts whatever can reach
+it, which is a deliberate, separately-tracked gap, not an oversight.
+
+On success the app is reachable at `/ui/<app_id>/` with no server restart,
+exactly like any other activated build.
 
 ## Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
 
