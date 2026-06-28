@@ -8,13 +8,15 @@ import (
 )
 
 // request is one parsed POST /deploy body: the agent's idempotency key, the
-// raw manifest bytes, and an open handle to the bundle part. Bundle must be
-// closed by the caller once extraction is done; form holds whatever
-// multipart spilled to temp files, also released by the caller.
+// raw manifest bytes, an open handle to the bundle part, and an optional open
+// handle to the source part. Bundle (and Source, if non-nil) must be closed by
+// the caller once extraction is done; form holds whatever multipart spilled to
+// temp files, also released by the caller.
 type request struct {
 	JobID    string
 	Manifest []byte
 	Bundle   multipart.File
+	Source   multipart.File // optional; nil when absent
 
 	form *multipart.Form
 }
@@ -22,6 +24,9 @@ type request struct {
 func (req *request) Close() {
 	if req.Bundle != nil {
 		req.Bundle.Close()
+	}
+	if req.Source != nil {
+		req.Source.Close()
 	}
 	if req.form != nil {
 		req.form.RemoveAll()
@@ -66,6 +71,12 @@ func parseRequest(r *http.Request) (*request, error) {
 		return nil, fmt.Errorf("missing required part %q: %w", "bundle", err)
 	}
 	req.Bundle = bundleFile
+
+	// Source is optional: absence is not an error. A deploy that omits it
+	// still succeeds; source is simply not stored for that job.
+	if sourceFile, _, err := r.FormFile("source"); err == nil {
+		req.Source = sourceFile
+	}
 
 	return req, nil
 }
