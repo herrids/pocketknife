@@ -5,9 +5,14 @@
 // Stub (today): tar/copy the bundle into ./out/<jobId>/.
 // HTTP (today): multipart POST to the Go control plane's POST /deploy,
 // idempotency-keyed on jobId -- see deployapi.NewServer() in the Go backend.
+//
+// Both submitters now also pack the editable frontend source (everything in
+// the scratch dir except node_modules and dist) as a "source" part so the
+// backend can store it for future updates.
 
 import { mkdir, rm, writeFile, readdir, cp, stat } from "node:fs/promises";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import * as tar from "tar";
 
 export interface SubmitInput {
@@ -72,11 +77,13 @@ export class HttpSubmitter implements Submitter {
     }
 
     const bundle = await packBundle(distDir);
+    const source = await packSource(input.scratchDir);
 
     const form = new FormData();
     form.set("jobId", input.jobId);
     form.set("manifest", new Blob([JSON.stringify(input.manifest)], { type: "application/json" }), "manifest.json");
     form.set("bundle", new Blob([bundle], { type: "application/gzip" }), "bundle.tar.gz");
+    form.set("source", new Blob([source], { type: "application/gzip" }), "source.tar.gz");
 
     const url = `${this.baseUrl}/deploy`;
     let res: Response;
@@ -106,6 +113,24 @@ export class HttpSubmitter implements Submitter {
 // app's served dist/ directory.
 async function packBundle(distDir: string): Promise<Buffer> {
   const stream = tar.create({ cwd: distDir, gzip: true }, ["."]);
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+// packSource tars and gzips the editable frontend scaffold in scratchDir,
+// excluding node_modules and dist (which are build artifacts, not source).
+// The source archive is what the backend stores for future updates.
+async function packSource(scratchDir: string): Promise<Buffer> {
+  const entries = await readdir(scratchDir);
+  const include = entries.filter((e) => e !== "node_modules" && e !== "dist");
+  if (include.length === 0) {
+    // Empty source — valid tar = two 512-byte EOF blocks gzip'd.
+    return gzipSync(Buffer.alloc(1024, 0));
+  }
+  const stream = tar.create({ cwd: scratchDir, gzip: true }, include);
   const chunks: Buffer[] = [];
   for await (const chunk of stream) {
     chunks.push(chunk as Buffer);

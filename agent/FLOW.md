@@ -6,15 +6,19 @@ only irreversible step. Nothing the models do can submit an app on its own.
 ```
             ┌──────────────────────────────────────────────────────────────────┐
             │                          cli.ts (terminal)                       │
-            │  npm run agent -- "<prompt>" [--paste file]                      │
+            │  npm run agent -- "<prompt>" [--paste file] [--app <app_id>]     │
             └───────────────────────────┬──────────────────────────────────────┘
                                          │ new Orchestrator()
+                                         │ [--app] → orchestrator.loadExistingApp()
+                                         │           → AppSourceFetcher.fetch(appId)
+                                         │           → backend GET /export/{appId}[/source]
                                          ▼
             ┌──────────────────────────────────────────────────────────────────┐
             │                     orchestrator.ts (job state)                  │
             │  jobId, scratchDir = .scratch/<jobId>/                           │
             │  lastValid: last manifest+client that ever passed validation     │
             │  readyToBuild: flips true only if lastValid is set               │
+            │  updateAppId: set in update mode; enforced at submit             │
             └───────┬───────────────────────────────────────────┬──────────────┘
                     │ startPlanning / refinePlan                │ build()
                     ▼                                           ▼
@@ -27,15 +31,19 @@ only irreversible step. Nothing the models do can submit an app on its own.
    │   + mcp tools (below)              │      │          Skill                       │
    │   skill: pocketknife-manifest      │      │   skill: pocketknife-frontend        │
    │                                    │      │   hook: PreToolUse = scratch-guard.ts│
-   │   loop:                            │      │                                       │
-   │    1. draft/repair manifest        │      │   reads manifest.json + client.ts    │
-   │    2. call validate_manifest ──┐   │      │   (written by orchestrator.build())  │
-   │    3. on errors: repair, retry │   │      │   authors frontend files against the │
-   │    4. on success: summarize    │   │      │   typed client only (no raw fetch)   │
-   │       in plain language        │   │      │   scratch-guard hook denies any      │
-   │    5. watch for user intent    │   │      │   Write/Edit outside scratchDir,     │
-   │       ("build it", "ship it")  │   │      │   even via symlink or ../ escape     │
-   │       → call ready_to_build ───┼─┐ │      └──────────────────────────────────────┘
+   │   update mode: prompt includes     │      │                                       │
+   │   <current-manifest> block +       │      │   update mode: scratchDir seeded     │
+   │   stable-id preservation rules     │      │   from fetched source tree instead   │
+   │                                    │      │   of blank scaffold (fallback to     │
+   │   loop:                            │      │   scaffold if no source stored)      │
+   │    1. draft/repair manifest        │      │                                       │
+   │    2. call validate_manifest ──┐   │      │   reads manifest.json + client.ts    │
+   │    3. on errors: repair, retry │   │      │   (written by orchestrator.build())  │
+   │    4. on success: summarize    │   │      │   authors frontend files against the │
+   │       in plain language        │   │      │   typed client only (no raw fetch)   │
+   │    5. watch for user intent    │   │      │   scratch-guard hook denies any      │
+   │       ("build it", "ship it")  │   │      │   Write/Edit outside scratchDir,     │
+   │       → call ready_to_build ───┼─┐ │      │   even via symlink or ../ escape     │
    └─────────────────────────────────┼─┼────────────────────────────────────────────┘
                                       │ │
                     ┌─────────────────┘ └───────────────────┐
@@ -57,16 +65,25 @@ only irreversible step. Nothing the models do can submit an app on its own.
 
 ## Step by step
 
-1. **Entry point.** `npm run agent -- "<prompt>" [--paste file]` runs `cli.ts`. It
-   parses argv, optionally reads a pasted-code file, and constructs one
-   `Orchestrator` — one process, one job, one `jobId` (`cli.ts:27-45`).
+1. **Entry point.** `npm run agent -- "<prompt>" [--paste file] [--app <app_id>]` runs
+   `cli.ts`. It parses argv, optionally reads a pasted-code file, and constructs one
+   `Orchestrator` — one process, one job, one `jobId` (`cli.ts:27-50`).
+
+   When `--app <app_id>` is passed the CLI calls `orchestrator.loadExistingApp(appId)`
+   before planning begins (`cli.ts:57-61`). This fetches the app's current manifest and
+   editable source from the backend (via `AppSourceFetcher`), stores them on the
+   orchestrator, and fails fast if the app is not found. The fetcher implementation is
+   selected by `selectFetcher()` in `seams/select.ts` using the same `SUBMIT_MODE` env
+   var as the submitter.
 
 2. **Planning session starts.** `orchestrator.startPlanning()` calls
    `planner.start()`, which opens a Claude Agent SDK `query()` session
-   (`planner.ts:76-100`). The planner's tool set is deliberately narrow:
-   `AskUserQuestion`, `Skill`, and two MCP tools served from an in-process MCP
-   server (`tools/validate-tool.ts`). It has **no file tools** — it cannot read or
-   write anything on disk.
+   (`planner.ts:72-101`). In update mode the initial prompt is prepended with a
+   `<current-manifest>` block and stable-id preservation rules so the planner edits
+   the existing manifest rather than authoring from scratch. The planner's tool set is
+   deliberately narrow: `AskUserQuestion`, `Skill`, and two MCP tools served from an
+   in-process MCP server (`tools/validate-tool.ts`). It has **no file tools** — it
+   cannot read or write anything on disk.
 
 3. **Draft → validate → repair loop.** Following the `pocketknife-manifest` skill,
    the planner drafts a manifest and calls `validate_manifest`. That tool calls
@@ -77,7 +94,7 @@ only irreversible step. Nothing the models do can submit an app on its own.
    the TypeScript client surface (`seams/generate-client.ts`). Errors come back as
    a list the planner must fix and re-submit; a success caches
    `{manifest, client}` as `lastValid` on the orchestrator
-   (`orchestrator.ts:42-44`) and returns the generated client text to the model so
+   and returns the generated client text to the model so
    it can describe the app accurately.
 
 4. **Conversational refinement.** Back in `cli.ts`, a `readline` loop reads user
@@ -90,13 +107,21 @@ only irreversible step. Nothing the models do can submit an app on its own.
    manifest already validated with no edits since, it calls `ready_to_build`. The
    tool handler just calls `onReady()` (`validate-tool.ts:65-81`); the
    orchestrator's callback only actually sets `readyToBuild = true` if `lastValid`
-   is set (`orchestrator.ts:45-50`) — the model can report intent, but only a
-   genuinely-validated manifest can make that intent stick.
+   is set — the model can report intent, but only a genuinely-validated manifest can
+   make that intent stick.
 
 6. **Build handoff.** The CLI polls `isReadyToBuild()`. Once true, it calls
-   `orchestrator.build()` (`orchestrator.ts:74-84`), which writes the cached
-   `manifest.json` and `client.ts` into a fresh `.scratch/<jobId>/` directory,
-   then starts the **builder session** (`builder.ts`).
+   `orchestrator.build()`, which writes the cached `manifest.json` and `client.ts`
+   into the scratch directory, then seeds the source tree:
+
+   - **New-app mode**: copies the blank React/Vite/Tailwind scaffold from
+     `templates/frontend/` (excluding `node_modules` and `dist`).
+   - **Update mode with stored source**: extracts the fetched source archive into
+     the scratch dir instead of the scaffold, so the builder edits real files.
+   - **Update mode without source** (legacy app): falls back to the blank scaffold;
+     the builder authors from scratch using the existing manifest as context.
+
+   Then starts the **builder session** (`builder.ts`).
 
 7. **Builder session.** A second, one-shot SDK `query()` with `cwd` pinned to the
    scratch directory, tools `Read/Write/Edit/Glob/Skill`,
@@ -113,37 +138,46 @@ only irreversible step. Nothing the models do can submit an app on its own.
    This is plain code, not a tool either model can call.
 
 9. **Submit — the one irreversible action.** On confirmation, `orchestrator.submit()`
-   (`orchestrator.ts:87-96`) hands `{jobId, manifest, scratchDir}` to the injected
-   `Submitter` (`seams/submitter.ts`). `StubSubmitter` wipes and rewrites
-   `out/<jobId>/` idempotently: `manifest.json`, a `frontend/` copy of the
-   authored tree, and a `bundle.json` file manifest; it returns a stub `appId`.
-   `submit()` lives in orchestrator code only — never behind a model-callable
-   tool, never inside the planner or builder loop.
+   hands `{jobId, manifest, scratchDir}` to the injected `Submitter`
+   (`seams/submitter.ts`). In update mode a submit-time guard first asserts that
+   `manifest.app.id === updateAppId` — a reminted id would route to `firstInstall`
+   on the backend instead of `redeploy`, orphaning the original app's data.
+
+   `StubSubmitter` wipes and rewrites `out/<jobId>/` idempotently: `manifest.json`,
+   a `frontend/` copy of the authored tree, and a `bundle.json` file manifest; it
+   returns a stub `appId`.
+
+   `HttpSubmitter` packs three parts as `multipart/form-data`:
+   - `bundle`: gzip-tar of `dist/` (the built frontend)
+   - `manifest`: the validated JSON manifest
+   - `source`: gzip-tar of the scratch dir excluding `node_modules` and `dist`
+     (the editable source, stored by the backend for future `--app` updates)
+
+   The POST goes to `{GO_BASE_URL}/deploy`, idempotency-keyed on `jobId`. That
+   endpoint installs a brand-new app id live or redeploys an already-known one
+   through the existing build pipeline, then responds with the deployed `appId`.
+
+   `submit()` lives in orchestrator code only — never behind a model-callable tool,
+   never inside the planner or builder loop.
 
 ## The seam: stub by default, real Go backend on opt-in
 
 `seams/select.ts` is the **only** place that reads `VALIDATE_MODE`, `SUBMIT_MODE`,
-and `GO_BASE_URL`. Everything else depends on the `Validator`/`Submitter`
+and `GO_BASE_URL`. Everything else depends on the `Validator`/`Submitter`/`AppSourceFetcher`
 interfaces and has no idea which implementation is behind them.
 
 - `VALIDATE_MODE=stub` (default) → `StubValidator`, local ajv + semantic checks.
 - `VALIDATE_MODE=http` → `HttpValidator`, intended to `POST {GO_BASE_URL}/validate`
   against the real `validateapi.NewServer()` in the Go backend — **not implemented
   yet** (throws).
-- `SUBMIT_MODE=stub` (default) → `StubSubmitter`, writes to `agent/out/`.
-- `SUBMIT_MODE=http` → `HttpSubmitter`: gzip-tars the scratch build's `dist/`
-  and POSTs it, plus the validated manifest, as `multipart/form-data` to
-  `{GO_BASE_URL}/deploy`, idempotency-keyed on the orchestrator's `jobId`. That
-  endpoint is `deployapi.NewServer()` in the Go backend: it installs a
-  brand-new app id live (open store, materialize DDL, register, activate the
-  frontend) or redeploys an already-known one through the existing build
-  pipeline, then responds with the deployed `appId` and its reachable
-  `/ui/<app_id>/` URL — which `submit()` returns as `{appId}`. A retried POST
-  for a `jobId` that already succeeded short-circuits to the same result
-  instead of deploying twice. The agent never authenticates this call; the
-  endpoint trusts its caller (see the Go repo's
-  `openspec/changes/wire-agent-to-backend-deploy/design.md` Open Questions for
-  the planned auth follow-up).
+- `SUBMIT_MODE=stub` (default) → `StubSubmitter`, writes to `agent/out/`; `StubFetcher`
+  which throws on `--app` (can't fetch without a backend).
+- `SUBMIT_MODE=http` → `HttpSubmitter`: multipart POST to `{GO_BASE_URL}/deploy`
+  with manifest + bundle + source. `HttpFetcher`: reads from `GET {GO_BASE_URL}/export/{appId}`
+  and `GET {GO_BASE_URL}/export/{appId}/source`. A retried POST for a `jobId` that
+  already succeeded short-circuits instead of deploying twice. The agent never
+  authenticates these calls (see the Go repo's openspec design for the planned
+  auth follow-up).
 
 ## Observability: optional Langfuse tracing
 

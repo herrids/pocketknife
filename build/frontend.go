@@ -131,6 +131,9 @@ func pruneOldBuilds(appDir, keepJobID string, retain int) error {
 		if err := os.RemoveAll(filepath.Join(dir, a.name)); err != nil {
 			return err
 		}
+		// Retire the corresponding source artifact alongside the build so both
+		// share exactly the same retention tail without a separate pass.
+		_ = os.RemoveAll(filepath.Join(appDir, SourcesDirName, a.name))
 	}
 	return nil
 }

@@ -101,6 +101,7 @@ func runServe(args []string) {
 	mux.Handle("/ui/", assets.NewServer(reg))
 	mux.Handle("/validate", validateapi.NewServer())
 	mux.Handle("/deploy", deployapi.NewServer(reg, bst, *appsDir))
+	mux.Handle("/export/", deployapi.NewExportServer(reg, bst))
 
 	handler := cors.Middleware(*corsEnabled, mux)
 	log.Printf("pocketknife listening on %s (apps dir: %s)", *addr, *appsDir)

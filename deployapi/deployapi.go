@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -107,9 +108,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	defer lock.Unlock()
 
 	if ra, ok := s.reg.App(app.ID); ok {
-		err = s.redeploy(ra, app.Frontend.Dist, manifestBytes, req.Bundle)
+		err = s.redeploy(ra, app.Frontend.Dist, manifestBytes, req.Bundle, req.Source)
 	} else {
-		err = s.firstInstall(manifestBytes, req.Bundle)
+		err = s.firstInstall(app.ID, manifestBytes, req.Bundle, req.Source)
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "deploy_failed", err.Error())
@@ -131,16 +132,25 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 }
 
 // firstInstall routes an unknown app id through build.Bootstrap, which owns
-// staging, materializing and registering the brand-new app.
-func (s *Server) firstInstall(manifestBytes []byte, bundle io.Reader) error {
-	_, err := build.Bootstrap(s.reg, s.bst, s.appsDir, manifestBytes, bundle)
-	return err
+// staging, materializing and registering the brand-new app. If source is
+// non-nil it is stored as an opaque artifact keyed on the resulting job id.
+func (s *Server) firstInstall(appID string, manifestBytes []byte, bundle io.Reader, source multipart.File) error {
+	res, err := build.Bootstrap(s.reg, s.bst, s.appsDir, manifestBytes, bundle)
+	if err != nil || source == nil || res == nil || res.Job == nil {
+		return err
+	}
+	// Bootstrap registered the app; resolve its dir from the live registry.
+	if ra, ok := s.reg.App(appID); ok {
+		_ = build.StoreSource(ra.Dir, res.Job.ID, source)
+	}
+	return nil
 }
 
 // redeploy writes the new bundle into the already-registered app's directory
 // and routes the deploy through build.Deploy, which decides install-vs-data-
-// migration by manifest version and owns the single rollback contract.
-func (s *Server) redeploy(ra *registry.RegisteredApp, distRel string, manifestBytes []byte, bundle io.Reader) error {
+// migration by manifest version and owns the single rollback contract. If
+// source is non-nil it is stored after a successful deploy.
+func (s *Server) redeploy(ra *registry.RegisteredApp, distRel string, manifestBytes []byte, bundle io.Reader, source multipart.File) error {
 	distDir := filepath.Join(ra.Dir, distRel)
 	if err := os.RemoveAll(distDir); err != nil {
 		return fmt.Errorf("clear previous bundle: %w", err)
@@ -148,8 +158,12 @@ func (s *Server) redeploy(ra *registry.RegisteredApp, distRel string, manifestBy
 	if err := build.ExtractBundle(bundle, distDir); err != nil {
 		return fmt.Errorf("extract frontend bundle: %w", err)
 	}
-	_, err := build.Deploy(context.Background(), s.reg, s.bst, ra.Schema.ID, manifestBytes, build.DeployOptions{})
-	return err
+	res, err := build.Deploy(context.Background(), s.reg, s.bst, ra.Schema.ID, manifestBytes, build.DeployOptions{})
+	if err != nil || source == nil || res == nil || res.Job == nil {
+		return err
+	}
+	_ = build.StoreSource(ra.Dir, res.Job.ID, source)
+	return nil
 }
 
 // The error envelope mirrors the rest of the server's shape

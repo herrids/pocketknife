@@ -1,10 +1,11 @@
 // The ONLY place in the agent that reads VALIDATE_MODE, SUBMIT_MODE or
-// GO_BASE_URL. Every other module depends on the Validator/Submitter
+// GO_BASE_URL. Every other module depends on the Validator/Submitter/Fetcher
 // interfaces and has no idea which implementation — or which transport —
 // backs them.
 
 import { StubValidator, HttpValidator, type Validator } from "./validator.js";
 import { StubSubmitter, HttpSubmitter, type Submitter } from "./submitter.js";
+import { StubFetcher, HttpFetcher, type AppSourceFetcher } from "./fetcher.js";
 
 export function selectValidator(): Validator {
   const mode = process.env.VALIDATE_MODE ?? "stub";
@@ -25,6 +26,21 @@ export function selectSubmitter(outDir: string): Submitter {
       return new StubSubmitter(outDir);
     case "http":
       return new HttpSubmitter(goBaseUrl());
+    default:
+      throw new Error(`unknown SUBMIT_MODE "${mode}" (expected "stub" or "http")`);
+  }
+}
+
+// selectFetcher returns an AppSourceFetcher for the current SUBMIT_MODE.
+// The stub mode throws on any fetch attempt; set SUBMIT_MODE=http to use the
+// live backend export seam.
+export function selectFetcher(): AppSourceFetcher {
+  const mode = process.env.SUBMIT_MODE ?? "stub";
+  switch (mode) {
+    case "stub":
+      return new StubFetcher();
+    case "http":
+      return new HttpFetcher(goBaseUrl());
     default:
       throw new Error(`unknown SUBMIT_MODE "${mode}" (expected "stub" or "http")`);
   }
