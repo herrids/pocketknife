@@ -27,9 +27,8 @@ export function createValidateManifestTool(validator: Validator, onValid: (resul
     "validate_manifest",
     "Validate a candidate Pocketknife app manifest against the structural schema and the " +
       "semantic rules (stable-id uniqueness, reserved names, reference resolution, default " +
-      "bounds). On success, returns the generated TypeScript client surface the frontend will " +
-      "be authored against. On failure, returns the specific errors to fix — repair the " +
-      "manifest and call this again. A manifest is never final until this returns valid: true.",
+      "bounds). On success, confirms the manifest is valid — do not call ready_to_build until " +
+      "this returns valid. On failure, returns the specific errors to fix — repair and revalidate.",
     {
       manifest: z.record(z.string(), z.unknown()).describe("The full candidate manifest as a JSON object."),
     },
@@ -42,7 +41,7 @@ export function createValidateManifestTool(validator: Validator, onValid: (resul
           content: [
             {
               type: "text" as const,
-              text: `Manifest is valid.\n\nGenerated TypeScript client surface:\n\n${result.client}`,
+              text: "Manifest is valid. The client surface is stored and will be used by the builder.",
             },
           ],
         };
@@ -57,6 +56,23 @@ export function createValidateManifestTool(validator: Validator, onValid: (resul
             text: `Manifest is invalid. Fix these and revalidate:\n${lines.join("\n")}`,
           },
         ],
+      };
+    },
+  );
+}
+
+export function createApproveConceptTool(onConceptApproved: () => void) {
+  return tool(
+    "approve_concept",
+    "Call this once the user has confirmed they are happy with the concept description " +
+      "you presented — the screens, user actions, and key features, in plain language " +
+      "without any schema detail. Do not call this before presenting a concept, and do " +
+      "not begin drafting a manifest until this tool has been called successfully.",
+    {},
+    async () => {
+      onConceptApproved();
+      return {
+        content: [{ type: "text" as const, text: "Concept approved — you may now draft the manifest." }],
       };
     },
   );
@@ -83,11 +99,16 @@ export function createReadyToBuildTool(onReady: () => void) {
 export function createPocketknifeMcpServer(
   validator: Validator,
   onValid: (result: ValidatedManifest) => void,
+  onConceptApproved: () => void,
   onReady: () => void,
 ): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: "pocketknife",
     version: "0.1.0",
-    tools: [createValidateManifestTool(validator, onValid), createReadyToBuildTool(onReady)],
+    tools: [
+      createApproveConceptTool(onConceptApproved),
+      createValidateManifestTool(validator, onValid),
+      createReadyToBuildTool(onReady),
+    ],
   });
 }

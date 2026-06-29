@@ -48,6 +48,7 @@ export class Orchestrator {
   private readonly planner: Planner;
   private lastValid: ValidatedManifest | undefined;
   private readyToBuild = false;
+  private conceptApproved = false;
 
   // Update-mode state. Set by loadExistingApp() before startPlanning().
   private updateAppId: string | undefined;
@@ -60,6 +61,9 @@ export class Orchestrator {
       onText: callbacks.onPlannerText,
       onValidManifest: (result) => {
         this.lastValid = result;
+      },
+      onConceptApproved: () => {
+        this.conceptApproved = true;
       },
       onReadyToBuild: () => {
         // Trust the model's intent-reading, not its judgment on validity --
@@ -95,6 +99,11 @@ export class Orchestrator {
   /** True once the planner has reported (via ready_to_build) that the user wants to proceed. */
   isReadyToBuild(): boolean {
     return this.readyToBuild;
+  }
+
+  /** True once the planner has presented a concept and the user has approved it. */
+  isConceptApproved(): boolean {
+    return this.conceptApproved;
   }
 
   /**
