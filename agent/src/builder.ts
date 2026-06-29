@@ -39,6 +39,12 @@ export interface BuilderCallbacks {
  */
 export function sandboxedBuilderOptions(scratchDir: string): Options {
   return {
+    effort: "high",
+    systemPrompt: {
+      type: "preset",
+      preset: "claude_code",
+      excludeDynamicSections: true,
+    },
     cwd: scratchDir,
     tools: ["Read", "Write", "Edit", "Glob", "Skill"],
     permissionMode: "acceptEdits",
