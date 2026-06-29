@@ -1,0 +1,122 @@
+{
+  "app": {
+    "id": "espresso_tracker",
+    "name": "Coffee Tracker",
+    "emoji": "☕",
+    "version": 2
+  },
+  "entities": [
+    {
+      "id": "ent_bean",
+      "name": "bean",
+      "fields": [
+        {
+          "id": "fld_name",
+          "name": "name",
+          "type": "text",
+          "required": true,
+          "max": 120
+        },
+        {
+          "id": "fld_roaster",
+          "name": "roaster",
+          "type": "text",
+          "max": 120
+        },
+        {
+          "id": "fld_roast_date",
+          "name": "roast_date",
+          "type": "datetime"
+        },
+        {
+          "id": "fld_notes",
+          "name": "notes",
+          "type": "text",
+          "max": 500
+        }
+      ]
+    },
+    {
+      "id": "ent_shot",
+      "name": "brew",
+      "fields": [
+        {
+          "id": "fld_method",
+          "name": "method",
+          "type": "enum",
+          "values": [
+            "espresso",
+            "aeropress"
+          ],
+          "default": "espresso",
+          "required": true
+        },
+        {
+          "id": "fld_bean",
+          "name": "bean",
+          "type": "reference",
+          "target": "ent_bean",
+          "onDelete": "set_null"
+        },
+        {
+          "id": "fld_dose_g",
+          "name": "dose_g",
+          "type": "real",
+          "required": true,
+          "min": 0,
+          "max": 50
+        },
+        {
+          "id": "fld_yield_g",
+          "name": "output_g",
+          "type": "real",
+          "min": 0,
+          "max": 500
+        },
+        {
+          "id": "fld_time_s",
+          "name": "brew_time_s",
+          "type": "integer",
+          "min": 0,
+          "max": 300
+        },
+        {
+          "id": "fld_grind",
+          "name": "grind_setting",
+          "type": "text",
+          "max": 50
+        },
+        {
+          "id": "fld_water_temp_c",
+          "name": "water_temp_c",
+          "type": "real",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "id": "fld_inverted",
+          "name": "inverted",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "id": "fld_rating",
+          "name": "rating",
+          "type": "integer",
+          "min": 1,
+          "max": 5
+        },
+        {
+          "id": "fld_notes",
+          "name": "notes",
+          "type": "text",
+          "max": 500
+        }
+      ]
+    }
+  ],
+  "frontend": {
+    "dist": "dist",
+    "entry": "index.html"
+  }
+}
