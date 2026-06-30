@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { ThemeToggle } from "../components/ThemeToggle";
 
 export function Login() {
   const navigate = useNavigate();
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -20,10 +22,10 @@ export function Login() {
     setLoading(true);
     setError("");
     try {
-      await api.login(password);
+      await api.login(email, password);
       navigate("/home", { replace: true });
     } catch {
-      setError("Incorrect password");
+      setError("Incorrect email or password");
       setPassword("");
     } finally {
       setLoading(false);
@@ -34,6 +36,9 @@ export function Login() {
     <div className="min-h-dvh flex flex-col bg-surface dark:bg-ink">
       {/* Hero */}
       <div className="flex-1 flex flex-col items-center justify-center px-6 pt-16 pb-10 bg-ink dark:bg-[#0E0C09] relative overflow-hidden">
+        <div className="absolute top-6 right-6 z-10">
+          <ThemeToggle />
+        </div>
         {/* Memphis decorations */}
         <div className="absolute top-8 right-8 w-24 h-24 rounded-full bg-teal opacity-20" />
         <div className="absolute bottom-12 left-6 w-16 h-16 bg-app-pink opacity-15 rotate-45" />
@@ -53,7 +58,10 @@ export function Login() {
           <input
             type="email"
             placeholder="you@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
+            required
             className="w-full px-4 py-3 rounded-lg bg-card dark:bg-[#28231C] border border-ink/10 dark:border-white/10 text-ink dark:text-[#F3ECDD] placeholder:text-ink-faint text-sm outline-none focus:ring-2 focus:ring-terracotta/40"
           />
           <input
@@ -68,7 +76,7 @@ export function Login() {
           {error && <p className="text-red-500 text-xs text-center">{error}</p>}
           <button
             type="submit"
-            disabled={loading || !password}
+            disabled={loading || !email || !password}
             className="w-full py-3 rounded-lg bg-ink dark:bg-[#F3ECDD] text-surface dark:text-ink font-semibold text-sm press-spring-sm disabled:opacity-40"
           >
             {loading ? "Signing in…" : "Sign in →"}

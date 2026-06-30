@@ -4,7 +4,10 @@ import { useRegistry, useLastOpenedApp } from "../lib/useRegistry";
 import type { RegistryEntry } from "../lib/api";
 import { AppTile, NewAppTile } from "../components/AppTile";
 import { NewAppSheet } from "../components/NewAppSheet";
-import { BottomNav } from "../components/BottomNav";
+import { ThemeToggle } from "../components/ThemeToggle";
+// BottomNav (Home/Search/Recent/Menu) isn't wired to anything useful yet —
+// commented out rather than deleted in case it gets a real menu later.
+// import { BottomNav } from "../components/BottomNav";
 
 const ACTIVE_STATES = new Set(["queued", "building", "activating"]);
 
@@ -43,7 +46,6 @@ export function Home() {
   const [showSheet, setShowSheet] = useState(false);
 
   const buildingApps = entries.filter((e) => ACTIVE_STATES.has(e.buildState));
-  const lastApp = entries.find((e) => e.appId === lastAppId);
   const filteredApps = filterApps(entries, tab, lastAppId);
 
   function openApp(app: RegistryEntry) {
@@ -70,10 +72,13 @@ export function Home() {
               Your pocketknife
             </h1>
           </div>
-          {/* Avatar */}
-          <div className="w-11 h-11 rounded-[14px] bg-amber flex items-center justify-center text-xl"
-            style={{ boxShadow: "0 3px 0 rgba(30,27,21,0.12)" }}>
-            🙂
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            {/* Avatar */}
+            <div className="w-11 h-11 rounded-[14px] bg-amber flex items-center justify-center text-xl"
+              style={{ boxShadow: "0 3px 0 rgba(30,27,21,0.12)" }}>
+              🙂
+            </div>
           </div>
         </div>
 
@@ -126,29 +131,6 @@ export function Home() {
         </div>
       </div>
 
-      {/* Jump Back In */}
-      {lastApp && tab === "all" && (
-        <div className="mx-5 mb-5">
-          <button
-            onClick={() => openApp(lastApp)}
-            className="w-full rounded-2xl p-4 flex items-center gap-3 press-spring relative overflow-hidden"
-            style={{ backgroundColor: lastApp.color }}
-          >
-            <div className="absolute top-0 right-0 w-24 h-24 rounded-full opacity-10 bg-white -translate-y-1/2 translate-x-1/2" />
-            <div className="w-12 h-12 rounded-squircle bg-white/20 flex items-center justify-center text-2xl">
-              {lastApp.emoji}
-            </div>
-            <div className="flex-1 text-left">
-              <p className="font-mono text-[9px] uppercase tracking-widest text-white/70 mb-0.5">JUMP BACK IN</p>
-              <p className="text-white font-bold text-base">{lastApp.displayName}</p>
-            </div>
-            <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center" style={{ color: lastApp.color }}>
-              →
-            </div>
-          </button>
-        </div>
-      )}
-
       {/* App grid */}
       <div className="px-5">
         <div className="flex items-center justify-between mb-3">
@@ -172,7 +154,7 @@ export function Home() {
         )}
       </div>
 
-      <BottomNav />
+      {/* <BottomNav /> */}
 
       {showSheet && <NewAppSheet onClose={() => setShowSheet(false)} />}
     </div>

@@ -33,7 +33,7 @@ func openTestStore(t *testing.T) *build.Store {
 
 func TestEnsureAppMeta_Defaults(t *testing.T) {
 	st := openTestStore(t)
-	if err := st.EnsureAppMeta("app1", "My App"); err != nil {
+	if err := st.EnsureAppMeta("app1", "My App", "", ""); err != nil {
 		t.Fatalf("EnsureAppMeta: %v", err)
 	}
 	m, err := st.GetAppMeta("app1")
@@ -53,8 +53,8 @@ func TestEnsureAppMeta_Defaults(t *testing.T) {
 
 func TestEnsureAppMeta_Idempotent(t *testing.T) {
 	st := openTestStore(t)
-	_ = st.EnsureAppMeta("app1", "My App")
-	_ = st.EnsureAppMeta("app1", "My App Changed") // second call should be no-op
+	_ = st.EnsureAppMeta("app1", "My App", "", "")
+	_ = st.EnsureAppMeta("app1", "My App Changed", "", "") // second call should be no-op
 	m, _ := st.GetAppMeta("app1")
 	if m.DisplayName != "My App" {
 		t.Errorf("expected first value preserved, got %q", m.DisplayName)
@@ -64,7 +64,7 @@ func TestEnsureAppMeta_Idempotent(t *testing.T) {
 func TestUpsertAndListAppMeta(t *testing.T) {
 	st := openTestStore(t)
 	for i, name := range []string{"Alpha", "Beta", "Gamma"} {
-		_ = st.EnsureAppMeta("app"+name, name)
+		_ = st.EnsureAppMeta("app"+name, name, "", "")
 		_ = st.UpsertAppMeta(build.AppMeta{AppID: "app" + name, Emoji: "🎯", Color: "#123456", DisplayName: name, GridOrder: i})
 	}
 
@@ -83,9 +83,9 @@ func TestUpsertAndListAppMeta(t *testing.T) {
 
 func TestReorderApps(t *testing.T) {
 	st := openTestStore(t)
-	_ = st.EnsureAppMeta("a", "A")
-	_ = st.EnsureAppMeta("b", "B")
-	_ = st.EnsureAppMeta("c", "C")
+	_ = st.EnsureAppMeta("a", "A", "", "")
+	_ = st.EnsureAppMeta("b", "B", "", "")
+	_ = st.EnsureAppMeta("c", "C", "", "")
 
 	if err := st.ReorderApps([]string{"c", "a", "b"}); err != nil {
 		t.Fatalf("ReorderApps: %v", err)
@@ -102,6 +102,7 @@ func newTestServer(t *testing.T) (http.Handler, *build.Store) {
 	t.Helper()
 	st := openTestStore(t)
 	reg := registry.New()
+	t.Setenv("POCKETKNIFE_ADMIN_EMAIL", "admin@pocketknife.local")
 	t.Setenv("POCKETKNIFE_ADMIN_PASSWORD", "testpass123")
 	srv, err := platform.NewServer(st, reg, "")
 	if err != nil {
@@ -113,7 +114,7 @@ func newTestServer(t *testing.T) (http.Handler, *build.Store) {
 func TestLogin_Success(t *testing.T) {
 	srv, _ := newTestServer(t)
 
-	body := `{"password":"testpass123"}`
+	body := `{"email":"admin@pocketknife.local","password":"testpass123"}`
 	req := httptest.NewRequest(http.MethodPost, "/platform/auth/login", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -132,7 +133,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 	srv, _ := newTestServer(t)
 
 	start := time.Now()
-	body := `{"password":"wrong"}`
+	body := `{"email":"admin@pocketknife.local","password":"wrong"}`
 	req := httptest.NewRequest(http.MethodPost, "/platform/auth/login", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -143,6 +144,20 @@ func TestLogin_WrongPassword(t *testing.T) {
 	}
 	if time.Since(start) < 150*time.Millisecond {
 		t.Error("expected brute-force delay on wrong password")
+	}
+}
+
+func TestLogin_WrongEmail(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	body := `{"email":"someone-else@pocketknife.local","password":"testpass123"}`
+	req := httptest.NewRequest(http.MethodPost, "/platform/auth/login", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rr.Code)
 	}
 }
 
@@ -160,7 +175,7 @@ func TestAuthGuard_NoToken(t *testing.T) {
 
 func login(t *testing.T, srv http.Handler) string {
 	t.Helper()
-	body := `{"password":"testpass123"}`
+	body := `{"email":"admin@pocketknife.local","password":"testpass123"}`
 	req := httptest.NewRequest(http.MethodPost, "/platform/auth/login", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
@@ -176,7 +191,7 @@ func login(t *testing.T, srv http.Handler) string {
 
 func TestRegistryList(t *testing.T) {
 	srv, st := newTestServer(t)
-	_ = st.EnsureAppMeta("myapp", "My App")
+	_ = st.EnsureAppMeta("myapp", "My App", "", "")
 	tok := login(t, srv)
 
 	req := httptest.NewRequest(http.MethodGet, "/platform/registry", nil)
@@ -196,7 +211,7 @@ func TestRegistryList(t *testing.T) {
 
 func TestRegistryPatch(t *testing.T) {
 	srv, st := newTestServer(t)
-	_ = st.EnsureAppMeta("myapp", "My App")
+	_ = st.EnsureAppMeta("myapp", "My App", "", "")
 	tok := login(t, srv)
 
 	body := `{"emoji":"🌱","color":"#A8D5A2"}`
@@ -218,9 +233,9 @@ func TestRegistryPatch(t *testing.T) {
 
 func TestRegistryReorder(t *testing.T) {
 	srv, st := newTestServer(t)
-	_ = st.EnsureAppMeta("a", "A")
-	_ = st.EnsureAppMeta("b", "B")
-	_ = st.EnsureAppMeta("c", "C")
+	_ = st.EnsureAppMeta("a", "A", "", "")
+	_ = st.EnsureAppMeta("b", "B", "", "")
+	_ = st.EnsureAppMeta("c", "C", "", "")
 	tok := login(t, srv)
 
 	body := `{"order":["c","a","b"]}`

@@ -101,7 +101,7 @@ func runServe(args []string) {
 
 	// Ensure every registered app has an app_meta row (default emoji/color/order).
 	for _, ra := range reg.Apps() {
-		if err := bst.EnsureAppMeta(ra.Schema.ID, ra.Schema.Name); err != nil {
+		if err := bst.EnsureAppMeta(ra.Schema.ID, ra.Schema.Name, ra.Schema.Emoji, ra.Schema.Color); err != nil {
 			log.Printf("warning: ensure app_meta for %q: %v", ra.Schema.ID, err)
 		}
 	}

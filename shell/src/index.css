@@ -15,10 +15,8 @@ body {
   min-height: 100dvh;
 }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    background-color: #1B1813;
-  }
+html.dark body {
+  background-color: #1B1813;
 }
 
 /* Spring press animation for interactive tiles */
