@@ -17,8 +17,17 @@ activates** an app's pre-built frontend with a single rollback contract (build &
 deploy), serves each app's activated UI from the same origin as its API (static
 assets), generates a **typed TypeScript client** from a manifest, and runs an
 app's declared **sandboxed server-side functions** in a capability-checked
-WebAssembly sandbox. Each is a separable concern with its own package; the core
-above does not depend on any of them.
+WebAssembly sandbox.
+
+The same binary also serves a **shell launcher** — a React SPA that is the host
+UI for the whole system. From the shell a user can browse, open, and manage every
+registered app. Pressing "+ New" starts a **conversational authoring session**
+with a Claude-backed agent: the agent proposes a manifest and frontend,
+the user reviews and refines it, then approves — after which the agent submits
+it through `POST /deploy` and the app appears in the launcher grid within
+seconds. The shell is compiled from `shell/` and served at `/` by the same
+binary that serves all the app APIs. No separate process, no separate origin
+in production.
 
 ## Contract / invariants
 
@@ -60,7 +69,12 @@ client/           typed TypeScript client generator (pure fn of the schema)
 sandbox/          capability-checked WebAssembly sandbox for functions
 broker/           the only path from a function to a model provider
 consent/          derives an app's union capability surface from the manifest
+platform/         session auth + registry API + agent bridge (all /platform/ routes)
+shellserve/       serves the compiled shell SPA (shell/dist/) at /
+deployapi/        POST /deploy ingest — receives approved bundles from the agent
 cors/             optional dev-only cross-origin middleware
+shell/            React SPA — the launcher shell (compiled to shell/dist/)
+agent/            Node/TypeScript Claude agent — conversational app authoring
 apps/             example apps (manifests + frontend; data.db created at runtime)
 manifest.schema.json   canonical JSON Schema for the manifest format
 schema_embed.go        embeds manifest.schema.json into the binary
@@ -80,8 +94,9 @@ Then:
 
 ```sh
 make test                 # run the full test suite
-make run                  # serve apps/ on :8080
-make build                # build bin/pocketknife
+make build                # build bin/pocketknife + compile shell/ SPA
+make shell-build          # compile shell/ SPA only → shell/dist/
+make run                  # serve apps/ on :8080 (API-only, no shell)
 make vet / make fmt       # go vet / go fmt
 ```
 
@@ -89,8 +104,8 @@ The binary has three modes. With no subcommand it **serves**; `migrate` and
 `build` are headless one-shot commands.
 
 ```sh
-# serve (default): API + build-status + activated UIs over one origin
-./bin/pocketknife -addr :8080 -apps apps [-platform-db platform.db] [-cors]
+# serve (default): API + shell launcher + activated UIs over one origin
+./bin/pocketknife -addr :8080 -apps apps [-platform-db platform.db] [-shell-dist shell/dist] [-agent-bin ""] [-cors]
 
 # migrate: evolve one app's schema to a new manifest version, no data loss
 ./bin/pocketknife migrate -app <id> -to <new_manifest.json> [-confirm] [-witnesses <file.json>]
@@ -103,9 +118,125 @@ On boot the server scans `apps/*/manifest.json`, validates each (skipping and
 logging any that fail), materializes each app's `data.db`, registers the schema,
 reconciles build state (failing any job interrupted by a restart and reattaching
 the active build per app), and serves. A restart re-derives the registry from
-disk and preserves all data. `-cors` enables permissive cross-origin headers for
-running a separate frontend dev server; the production binary serves the API and
-the built UI from one origin and never needs it.
+disk and preserves all data.
+
+`-shell-dist` sets the compiled shell directory (default `shell/dist`). If the
+directory is absent the shell routes return 503 — the API still works. `-agent-bin`
+is the path to a pre-built agent binary; if empty the server uses `npx tsx
+agent/src/cli.ts` when spawning a planning session. `-cors` enables permissive
+cross-origin headers for running a separate frontend dev server; the production
+binary serves the API and the built UI from one origin and never needs it.
+
+### Two-process dev mode
+
+In development it is convenient to run the Go API and the shell SPA dev server
+side by side so you get Vite's hot-module replacement:
+
+```sh
+# Terminal 1: Go API with CORS enabled
+POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -addr :8080 -apps apps
+
+# Terminal 2: Shell SPA dev server (proxies /platform/, /apps/, /ui/ → :8080)
+cd shell && npm install && npm run dev   # runs on http://localhost:3001
+```
+
+In production `make build` compiles both the Go binary and the shell SPA; the
+binary serves everything from one origin with no CORS needed.
+
+## Shell launcher
+
+The shell is a React 18 + TypeScript + Vite SPA compiled to `shell/dist/` and
+served at `/` by `shellserve.NewServer`. It has six screens:
+
+| Screen | Route | Purpose |
+|--------|-------|---------|
+| Login | `/login` | Password entry; redirects to `/home` if already authed |
+| Home | `/home` | App grid (emoji tiles, squircle style), "Jump Back In" card, building progress banner |
+| New App Sheet | (sheet on Home) | Describe the app you want; fires a planning session |
+| Plan Review | `/plan/:sessionId` | SSE-backed chat with the agent; shows checklist, refinement input, approve CTA |
+| App Inside View | `/app/:appId` | Iframe pointing at `/ui/{appId}/` with an inline "ask to change" bar |
+| Building State | (banner on Home) | Live progress ring (queued → building → activating) with pocketPulse animation |
+
+Design tokens: cream palette (`#F2ECE0` surface, `#E8E0D0` canvas), terracotta
+accent (`#DD6440`), squircle border-radius (19 px tiles), Space Grotesk +
+Space Mono (self-hosted). Light and dark modes via `prefers-color-scheme` and
+Tailwind `dark:` variants.
+
+## Platform API (`/platform/`)
+
+All `/platform/` routes require a valid session cookie (`pk_session`). The two
+auth routes are exempt.
+
+### Authentication
+
+The server reads `POCKETKNIFE_ADMIN_PASSWORD` at startup. If absent it generates
+a random password, prints it once to stdout, and uses that for the session. The
+password is bcrypt-hashed in memory and never written to disk.
+
+| Method & path | Action |
+|---------------|--------|
+| `POST /platform/auth/login` | Body `{"password":"..."}`. On success: 200 + HttpOnly SameSite=Strict `pk_session` cookie (24h TTL, sliding renewal). On failure: 401 with a ≥ 200 ms floor to slow brute force. |
+| `POST /platform/auth/logout` | Clears the cookie and invalidates the token. |
+
+### App registry
+
+| Method & path | Action |
+|---------------|--------|
+| `GET /platform/registry` | Returns a JSON array of all registered apps sorted by `grid_order`, each entry including `appId`, `emoji`, `color`, `displayName`, `gridOrder`, `buildState`, `manifestVersion`, `activeBuildId`. |
+| `PATCH /platform/registry/{appId}` | Update `emoji`, `color`, and/or `displayName` for one app. |
+| `POST /platform/registry/reorder` | Body `{"order":["appId1","appId2",...]}`. Sets `grid_order` in bulk. |
+
+App display metadata (`emoji`, `color`, `display_name`, `grid_order`) is stored
+in the platform database (`platform.db`, `app_meta` table) separate from per-app
+`data.db` files. Every newly registered app gets a default row automatically.
+
+### Agent bridge (planning sessions)
+
+A *planning session* is a live connection to the agent subprocess. The shell
+creates one, streams events over SSE, sends refinement messages, then approves
+the plan — after which the agent builds and submits through `POST /deploy`.
+
+| Method & path | Action |
+|---------------|--------|
+| `POST /platform/plan` | Body `{"prompt":"...","appId":"..."}`. Spawns an agent subprocess in `--bridge-mode`, returns `{"sessionId":"..."}`. |
+| `GET /platform/plan/{sessionId}/events` | SSE stream of bridge events (replays buffered events from `Last-Event-ID`; max 4 concurrent subscribers). |
+| `POST /platform/plan/{sessionId}/message` | Body `{"text":"..."}`. Sends a refinement to the running agent; returns 202. Returns 409 if the session is not in an active state. |
+| `POST /platform/plan/{sessionId}/approve` | Signals the agent to proceed with the build; returns `{"ok":true,"appId":"..."}`. Returns 409 if the plan is not in `ready` state. |
+
+Sessions time out after 30 minutes of inactivity. Up to 50 events are buffered
+per session for SSE replay.
+
+**Bridge event types** (agent → stdout as NDJSON):
+
+| Type | Fields | Meaning |
+|------|--------|---------|
+| `turn` | `role`, `text` | A new planner assistant message |
+| `plan` | `checklist:[{text,done}]` | Emitted when `validate_manifest` succeeds; summarizes planned features |
+| `ready` | `manifestVersion`, `appId?` | Valid plan exists; waiting for `approve` |
+| `error` | `reason` | Fatal agent error; session is dead |
+| `done` | `appId?` | Clean exit after deploy submission |
+
+See `docs/bridge-protocol.md` for the full NDJSON protocol and lifecycle diagram.
+
+## Agent (`agent/`)
+
+`agent/` is a separate Node/TypeScript process: a Claude-backed planner+builder
+that converses with the user to design a manifest and frontend, then — on
+explicit user approval, never on its own — submits the result through
+`POST /deploy`. The agent is stateless with respect to the Go server; it reads
+no files in `apps/` and never touches `platform.db`.
+
+Two invocation modes:
+
+- **Interactive CLI** (no flag): runs in a terminal, reads from readline, writes
+  human-readable prose. Used for standalone authoring or development.
+- **Bridge mode** (`--bridge-mode`): reads newline-delimited JSON from stdin
+  (`{type:"message"|"approve",...}`), writes newline-delimited JSON events to
+  stdout. This is the mode spawned by the Go server's planning session handler.
+
+When `--app <id>` is passed alongside `--bridge-mode`, the agent treats the
+session as a *change request* for an existing app and routes the approved result
+through `build.Deploy` rather than `build.Bootstrap`.
 
 ## Manifest format
 
@@ -240,6 +371,7 @@ All routes are namespaced by app: `/apps/{app_id}/{entity_name}`.
 | Status | When |
 |--------|------|
 | `400`  | malformed request / body fails field validation (details list per-field issues) |
+| `401`  | missing or expired session cookie (platform routes only) |
 | `404`  | unknown app, entity, or row |
 | `405`  | operation disabled for the entity |
 | `409`  | unique constraint violation, or a reference constraint (e.g. `onDelete: restrict`) |
@@ -250,15 +382,22 @@ enum membership, and reference-target existence.
 
 ### Other routes
 
-Alongside the per-app CRUD API, the serving binary mounts two more handlers
-(same JSON error envelope):
-
-| Method & path                  | Action |
-|--------------------------------|--------|
-| `GET /builds/{app}`            | every build job for an app, plus its durable activation pointer (read-only observability) |
-| `GET /builds/job/{id}`         | one build job by id |
-| `GET /ui/{app}/{path...}`      | the app's activated frontend bundle; unmatched paths fall back to the frontend's entry file (SPA routing) |
-| `POST /deploy`                 | ingest an approved manifest + built frontend bundle (`multipart/form-data`: `jobId`, `manifest`, `bundle`); installs a new app or redeploys an existing one — see "Deploy ingest" below |
+| Method & path | Action |
+|---------------|--------|
+| `GET /builds/{app}` | Every build job for an app, plus its durable activation pointer (read-only observability) |
+| `GET /builds/job/{id}` | One build job by id |
+| `GET /ui/{app}/{path...}` | The app's activated frontend bundle; unmatched paths fall back to the frontend's entry file (SPA routing) |
+| `POST /deploy` | Ingest an approved manifest + built frontend bundle (`multipart/form-data`: `jobId`, `manifest`, `bundle`); installs a new app or redeploys an existing one |
+| `POST /platform/auth/login` | Password login → session cookie |
+| `POST /platform/auth/logout` | Invalidate session |
+| `GET /platform/registry` | List all apps with display metadata + build state (auth required) |
+| `PATCH /platform/registry/{appId}` | Update app emoji/color/displayName (auth required) |
+| `POST /platform/registry/reorder` | Reorder app grid (auth required) |
+| `POST /platform/plan` | Start a planning session (auth required) |
+| `GET /platform/plan/{id}/events` | SSE stream of planning events (auth required) |
+| `POST /platform/plan/{id}/message` | Send refinement to agent (auth required) |
+| `POST /platform/plan/{id}/approve` | Approve plan and trigger build (auth required) |
+| `GET /` (and all unmatched paths) | Shell SPA (`shell/dist/index.html`) |
 
 ## curl examples
 
@@ -310,6 +449,28 @@ curl -s -X POST localhost:8080/apps/tasks/task -d '{"title":"x","priority":"urge
 # deleting a referenced project sets the task's project to null (onDelete: set_null)
 curl -s -X DELETE localhost:8080/apps/tasks/project/<project_id>
 curl -s localhost:8080/apps/tasks/task/<task_id>   # "project": null
+```
+
+### Platform API (auth + registry)
+
+```sh
+# login
+curl -s -c cookies.txt -X POST localhost:8080/platform/auth/login \
+  -H 'Content-Type: application/json' -d '{"password":"<your-password>"}'
+
+# list apps (requires cookie)
+curl -s -b cookies.txt localhost:8080/platform/registry | jq .
+
+# update app emoji
+curl -s -b cookies.txt -X PATCH localhost:8080/platform/registry/reading_tracker \
+  -H 'Content-Type: application/json' -d '{"emoji":"🌊"}'
+
+# reorder
+curl -s -b cookies.txt -X POST localhost:8080/platform/registry/reorder \
+  -H 'Content-Type: application/json' -d '{"order":["tasks","reading_tracker","gratitude_log"]}'
+
+# logout
+curl -s -b cookies.txt -X POST localhost:8080/platform/auth/logout
 ```
 
 ## Schema migrations (`migrate/`)
@@ -392,7 +553,9 @@ endpoint does **not** authenticate its caller — it trusts whatever can reach
 it, which is a deliberate, separately-tracked gap, not an oversight.
 
 On success the app is reachable at `/ui/<app_id>/` with no server restart,
-exactly like any other activated build.
+exactly like any other activated build. The newly deployed app also receives a
+default `app_meta` row (emoji `📦`, grid order auto-assigned) so it
+immediately appears in the shell launcher's home grid.
 
 ## Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
 
@@ -409,7 +572,7 @@ capabilities it wasn't granted.
 `broker/` is the **only** path from a function to a model provider: the provider
 token is read once from the environment, held unexported, and never reaches a
 function or the browser. `consent/` derives the union of every function's
-declared capabilities for an app — a pure function of the manifest — so a future
+declared capabilities for an app — a pure function of the manifest — so the
 shell can show the full capability surface before the app is allowed to run.
 
 ## Typed client (`client/`)
@@ -426,12 +589,11 @@ Intentionally **not** built:
 
 - **On-box compilation.** Pocketknife references pre-built frontends and `.wasm`
   functions; it never bundles or compiles them itself.
-- **LLM-authored manifests / changesets.** Migrations are derived structurally;
-  there is a deliberate seam where a model-proposed, annotated changeset would be
-  *verified* against the structural ground truth, but nothing authors one.
-- **Authentication, users, sessions, multi-user, permissions.**
-- **A frontend shell / tiles** (the host UI that would render `consent`'s
-  capability surface and switch between apps).
+- **Multi-user auth, roles, permissions.** The session layer is single-user
+  (one password, one role). Per-app row-level access control is not modeled.
 - **Real-time / subscriptions.**
 - **Query features beyond the v1 surface** — no OR, nesting, joins, or extra
   operators/types.
+- **`POST /deploy` authentication.** The deploy ingest endpoint trusts any
+  caller that can reach it; locking it to the agent bridge is a separately-
+  tracked gap.
