@@ -12,8 +12,9 @@ Pocketknife is a single, generic, schema-driven HTTP backend written in Go. One 
 
 ```sh
 make test                 # full suite: go test ./...
-make build                # build bin/pocketknife
-make run                  # serve apps/ on :8080
+make build                # build bin/pocketknife (includes make shell-build)
+make shell-build          # compile shell/ SPA → shell/dist/
+make run                  # serve apps/ on :8080 (API only, no shell)
 make vet                  # go vet ./...
 make fmt                  # go fmt ./...
 make clean                # rm bin/, delete all apps/**/data.db
@@ -24,6 +25,20 @@ go test ./... -run TestX -v                 # verbose single test across package
 ```
 
 Go must be on PATH. If absent (Homebrew is unavailable on this machine — see global guidance), install the official tarball into a user dir: `curl -fsSL https://go.dev/dl/go1.26.4.darwin-arm64.tar.gz | tar -C ~/.local -xz` then `export PATH="$HOME/.local/go/bin:$PATH"`.
+
+#### Shell dev setup (two-process dev mode)
+
+```sh
+# Terminal 1: Go API with CORS enabled
+POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -addr :8080 -apps apps
+
+# Terminal 2: Shell SPA dev server (proxies /platform/, /apps/, /ui/ → :8080)
+cd shell && npm install && npm run dev   # runs on http://localhost:3001
+```
+
+In production, `./bin/pocketknife` serves the compiled shell from `shell/dist/` at `/`
+with no CORS needed (single origin). Run `make build` to compile both the Go binary and
+the shell SPA.
 
 ### The binary's three modes (`cmd/pocketknife/main.go`)
 

@@ -131,6 +131,14 @@ CREATE TABLE IF NOT EXISTS deploy_requests (
 	manifest_version INTEGER NOT NULL,
 	url TEXT NOT NULL,
 	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_meta (
+	app_id TEXT PRIMARY KEY,
+	emoji TEXT NOT NULL DEFAULT '📦',
+	color TEXT NOT NULL DEFAULT '#E0E0E0',
+	display_name TEXT NOT NULL DEFAULT '',
+	grid_order INTEGER NOT NULL DEFAULT 0,
+	updated_at TEXT NOT NULL DEFAULT ''
 );`
 	if _, err := db.Exec(ddl); err != nil {
 		return fmt.Errorf("apply platform ddl: %w", err)
@@ -343,6 +351,117 @@ func (s *Store) DeployRequestByExternalID(externalJobID string) (*DeployRecord, 
 		return nil, fmt.Errorf("deploy request %s: %w", externalJobID, err)
 	}
 	return &rec, nil
+}
+
+// AppMeta is the display metadata for one app stored in platform.db.
+type AppMeta struct {
+	AppID       string `json:"appId"`
+	Emoji       string `json:"emoji"`
+	Color       string `json:"color"`
+	DisplayName string `json:"displayName"`
+	GridOrder   int    `json:"gridOrder"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
+// UpsertAppMeta inserts or updates the display metadata for an app. If
+// display_name is empty the caller should pass the manifest name as a default.
+func (s *Store) UpsertAppMeta(m AppMeta) error {
+	if m.UpdatedAt == "" {
+		m.UpdatedAt = store.NowUTC()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO app_meta (app_id, emoji, color, display_name, grid_order, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(app_id) DO UPDATE SET
+		   emoji        = CASE WHEN excluded.emoji        != '' THEN excluded.emoji        ELSE emoji        END,
+		   color        = CASE WHEN excluded.color        != '' THEN excluded.color        ELSE color        END,
+		   display_name = CASE WHEN excluded.display_name != '' THEN excluded.display_name ELSE display_name END,
+		   grid_order   = excluded.grid_order,
+		   updated_at   = excluded.updated_at`,
+		m.AppID, m.Emoji, m.Color, m.DisplayName, m.GridOrder, m.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert app_meta %s: %w", m.AppID, err)
+	}
+	return nil
+}
+
+// EnsureAppMeta inserts a default app_meta row if one does not already exist.
+// It assigns grid_order as MAX(grid_order)+1.
+func (s *Store) EnsureAppMeta(appID, displayName string) error {
+	var maxOrder int
+	row := s.db.QueryRow(`SELECT COALESCE(MAX(grid_order)+1, 0) FROM app_meta`)
+	_ = row.Scan(&maxOrder)
+	_, err := s.db.Exec(
+		`INSERT INTO app_meta (app_id, emoji, color, display_name, grid_order, updated_at)
+		 VALUES (?, '📦', '#E0E0E0', ?, ?, ?)
+		 ON CONFLICT(app_id) DO NOTHING`,
+		appID, displayName, maxOrder, store.NowUTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("ensure app_meta %s: %w", appID, err)
+	}
+	return nil
+}
+
+// GetAppMeta returns the display metadata for one app, or nil if absent.
+func (s *Store) GetAppMeta(appID string) (*AppMeta, error) {
+	row := s.db.QueryRow(
+		`SELECT app_id, emoji, color, display_name, grid_order, updated_at FROM app_meta WHERE app_id = ?`, appID)
+	m, err := scanAppMeta(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get app_meta %s: %w", appID, err)
+	}
+	return m, nil
+}
+
+// ListAppMeta returns all app_meta rows sorted by grid_order ascending.
+func (s *Store) ListAppMeta() ([]*AppMeta, error) {
+	rows, err := s.db.Query(
+		`SELECT app_id, emoji, color, display_name, grid_order, updated_at FROM app_meta ORDER BY grid_order ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("list app_meta: %w", err)
+	}
+	defer rows.Close()
+	var out []*AppMeta
+	for rows.Next() {
+		m, err := scanAppMeta(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan app_meta: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ReorderApps sets grid_order for each app id in the given slice (index = new
+// order). Unknown IDs are silently skipped. All updates run in one transaction.
+func (s *Store) ReorderApps(orderedIDs []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("reorder apps: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	now := store.NowUTC()
+	for i, id := range orderedIDs {
+		if _, err := tx.Exec(
+			`UPDATE app_meta SET grid_order = ?, updated_at = ? WHERE app_id = ?`, i, now, id,
+		); err != nil {
+			return fmt.Errorf("reorder apps: update %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func scanAppMeta(r rowScanner) (*AppMeta, error) {
+	var m AppMeta
+	if err := r.Scan(&m.AppID, &m.Emoji, &m.Color, &m.DisplayName, &m.GridOrder, &m.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanJob serves both Get and

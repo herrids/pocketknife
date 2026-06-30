@@ -25,7 +25,9 @@ import (
 	"pocketknife/cors"
 	"pocketknife/deployapi"
 	"pocketknife/migrate"
+	"pocketknife/platform"
 	"pocketknife/registry"
+	"pocketknife/shellserve"
 	"pocketknife/validateapi"
 )
 
@@ -48,6 +50,8 @@ func runServe(args []string) {
 	appsDir := fs.String("apps", "apps", "directory containing <app_id>/manifest.json")
 	addr := fs.String("addr", ":8080", "address to listen on")
 	platformDBPath := fs.String("platform-db", "platform.db", "path to the platform build-job database")
+	shellDist := fs.String("shell-dist", "shell/dist", "directory containing the compiled shell SPA (served at /)")
+	agentBin := fs.String("agent-bin", "", "path to the agent binary (defaults to tsx agent/src/cli.ts)")
 	corsEnabled := fs.Bool("cors", false, "allow cross-origin requests (for a frontend served by a separate dev server)")
 	_ = fs.Parse(args)
 
@@ -95,6 +99,18 @@ func runServe(args []string) {
 		log.Printf("warning: app %q has a stale or missing active-build pointer; serving API-only", id)
 	}
 
+	// Ensure every registered app has an app_meta row (default emoji/color/order).
+	for _, ra := range reg.Apps() {
+		if err := bst.EnsureAppMeta(ra.Schema.ID, ra.Schema.Name); err != nil {
+			log.Printf("warning: ensure app_meta for %q: %v", ra.Schema.ID, err)
+		}
+	}
+
+	platformServer, err := platform.NewServer(bst, reg, *agentBin)
+	if err != nil {
+		log.Fatalf("init platform server: %v", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/apps/", api.NewServer(reg))
 	mux.Handle("/builds/", build.NewStatusServer(bst, reg))
@@ -102,6 +118,9 @@ func runServe(args []string) {
 	mux.Handle("/validate", validateapi.NewServer())
 	mux.Handle("/deploy", deployapi.NewServer(reg, bst, *appsDir))
 	mux.Handle("/export/", deployapi.NewExportServer(reg, bst))
+	mux.Handle("/platform/", platformServer)
+	// Shell SPA must be last — it serves / and falls through for anything unknown.
+	mux.Handle("/", shellserve.NewServer(*shellDist))
 
 	handler := cors.Middleware(*corsEnabled, mux)
 	log.Printf("pocketknife listening on %s (apps dir: %s)", *addr, *appsDir)

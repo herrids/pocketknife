@@ -132,3 +132,33 @@ echo
 curl -s "$BASE/task?filter=project:eq:$PROJECT_ID" | jq .
 curl -s -i "$BASE/comment/$COMMENT_ID"
 echo
+
+echo "######################################################"
+echo "## 11. PLATFORM SMOKE: registry list + login        ##"
+echo "######################################################"
+PLATFORM_BASE="http://localhost:8080/platform"
+
+# Registry without auth should return 401.
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PLATFORM_BASE/registry")
+echo "GET /platform/registry (no auth) → $STATUS (expect 401)"
+[ "$STATUS" = "401" ] && echo "PASS" || echo "FAIL: expected 401 got $STATUS"
+echo
+
+# Login with wrong password should return 401.
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$PLATFORM_BASE/auth/login" \
+  -H 'Content-Type: application/json' -d '{"password":"wrongpassword"}')
+echo "POST /platform/auth/login (wrong password) → $STATUS (expect 401)"
+[ "$STATUS" = "401" ] && echo "PASS" || echo "FAIL: expected 401 got $STATUS"
+echo
+
+# If POCKETKNIFE_ADMIN_PASSWORD is set in env, test a successful login.
+if [ -n "${POCKETKNIFE_ADMIN_PASSWORD:-}" ]; then
+  RESP=$(curl -s -c /tmp/pk_cookies.txt -X POST "$PLATFORM_BASE/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"password\":\"$POCKETKNIFE_ADMIN_PASSWORD\"}")
+  echo "POST /platform/auth/login (correct password) → $RESP"
+  REGISTRY=$(curl -s -b /tmp/pk_cookies.txt "$PLATFORM_BASE/registry")
+  echo "GET /platform/registry (authed) → $REGISTRY" | head -c 200
+  echo
+  rm -f /tmp/pk_cookies.txt
+fi

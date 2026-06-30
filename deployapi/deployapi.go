@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -126,6 +127,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
+	}
+
+	// Register display metadata so the launcher grid always has a row for this app.
+	if err := s.bst.EnsureAppMeta(app.ID, app.Name); err != nil {
+		// Non-fatal: the deploy succeeded; the launcher will show a default row.
+		log.Printf("warning: ensure app_meta for %q after deploy: %v", app.ID, err)
 	}
 
 	writeJSON(w, http.StatusOK, response{AppID: app.ID, Version: app.Version, JobID: req.JobID, URL: url})
