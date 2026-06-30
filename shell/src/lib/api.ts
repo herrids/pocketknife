@@ -10,13 +10,13 @@ export interface RegistryEntry {
 }
 
 export const api = {
-  async login(password: string): Promise<void> {
+  async login(email: string, password: string): Promise<void> {
     const res = await fetch("/platform/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ email, password }),
     });
-    if (!res.ok) throw new Error("invalid password");
+    if (!res.ok) throw new Error("invalid email or password");
   },
 
   async logout(): Promise<void> {

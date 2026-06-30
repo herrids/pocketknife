@@ -51,6 +51,7 @@ type App struct {
 	ID       string
 	Name     string
 	Emoji    string
+	Color    string
 	Version  int
 	Entities []*Entity
 	// Frontend points at this version's pre-built static bundle, or nil if the

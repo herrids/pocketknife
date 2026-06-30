@@ -130,7 +130,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Register display metadata so the launcher grid always has a row for this app.
-	if err := s.bst.EnsureAppMeta(app.ID, app.Name); err != nil {
+	if err := s.bst.EnsureAppMeta(app.ID, app.Name, app.Emoji, app.Color); err != nil {
 		// Non-fatal: the deploy succeeded; the launcher will show a default row.
 		log.Printf("warning: ensure app_meta for %q after deploy: %v", app.ID, err)
 	}

@@ -386,17 +386,25 @@ func (s *Store) UpsertAppMeta(m AppMeta) error {
 	return nil
 }
 
-// EnsureAppMeta inserts a default app_meta row if one does not already exist.
-// It assigns grid_order as MAX(grid_order)+1.
-func (s *Store) EnsureAppMeta(appID, displayName string) error {
+// EnsureAppMeta inserts a default app_meta row if one does not already exist,
+// seeded from the manifest's own emoji/color (falling back to a generic
+// default for either one the manifest left blank). It assigns grid_order as
+// MAX(grid_order)+1.
+func (s *Store) EnsureAppMeta(appID, displayName, emoji, color string) error {
+	if emoji == "" {
+		emoji = "📦"
+	}
+	if color == "" {
+		color = "#E0E0E0"
+	}
 	var maxOrder int
 	row := s.db.QueryRow(`SELECT COALESCE(MAX(grid_order)+1, 0) FROM app_meta`)
 	_ = row.Scan(&maxOrder)
 	_, err := s.db.Exec(
 		`INSERT INTO app_meta (app_id, emoji, color, display_name, grid_order, updated_at)
-		 VALUES (?, '📦', '#E0E0E0', ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(app_id) DO NOTHING`,
-		appID, displayName, maxOrder, store.NowUTC(),
+		appID, emoji, color, displayName, maxOrder, store.NowUTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("ensure app_meta %s: %w", appID, err)
