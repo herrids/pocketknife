@@ -7,11 +7,16 @@ GO ?= go
 ADDR ?= :8080
 APPS ?= apps
 
-.PHONY: all build run test vet fmt clean tidy
+SHELL_DIR ?= shell
+
+.PHONY: all build shell-build run test vet fmt clean tidy
 
 all: build
 
-build:
+shell-build:
+	cd $(SHELL_DIR) && npm install && npm run build
+
+build: shell-build
 	$(GO) build -o bin/pocketknife ./cmd/pocketknife
 
 run:

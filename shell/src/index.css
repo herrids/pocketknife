@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: #E8E0D0;
+  font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  min-height: 100dvh;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #1B1813;
+  }
+}
+
+/* Spring press animation for interactive tiles */
+.press-spring {
+  transition: transform 0.15s ease;
+}
+.press-spring:active {
+  transform: scale(0.93);
+}
+.press-spring-sm:active {
+  transform: scale(0.97);
+}
