@@ -134,7 +134,7 @@ side by side so you get Vite's hot-module replacement:
 
 ```sh
 # Terminal 1: Go API with CORS enabled
-POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -addr :8080 -apps apps
+POCKETKNIFE_ADMIN_EMAIL=you@example.com POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -addr :8080 -apps apps
 
 # Terminal 2: Shell SPA dev server (proxies /platform/, /apps/, /ui/ → :8080)
 cd shell && npm install && npm run dev   # runs on http://localhost:3001
@@ -150,17 +150,26 @@ served at `/` by `shellserve.NewServer`. It has six screens:
 
 | Screen | Route | Purpose |
 |--------|-------|---------|
-| Login | `/login` | Password entry; redirects to `/home` if already authed |
-| Home | `/home` | App grid (emoji tiles, squircle style), "Jump Back In" card, building progress banner |
+| Login | `/login` | Email + password entry; redirects to `/home` if already authed |
+| Home | `/home` | App grid (emoji tiles, squircle style, per-app color), building progress banner |
 | New App Sheet | (sheet on Home) | Describe the app you want; fires a planning session |
 | Plan Review | `/plan/:sessionId` | SSE-backed chat with the agent; shows checklist, refinement input, approve CTA |
 | App Inside View | `/app/:appId` | Iframe pointing at `/ui/{appId}/` with an inline "ask to change" bar |
 | Building State | (banner on Home) | Live progress ring (queued → building → activating) with pocketPulse animation |
 
+An app's tile emoji and accent color default to the `app.emoji` / `app.color`
+declared in its manifest (see [Manifest format](#manifest-format)); both can be
+overridden afterward via `PATCH /platform/registry/{appId}`. A bottom nav bar
+(Home/Search/Recent/Menu) exists in `shell/src/components/BottomNav.tsx` but is
+currently commented out of `Home.tsx` — none of its destinations are wired up
+yet.
+
 Design tokens: cream palette (`#F2ECE0` surface, `#E8E0D0` canvas), terracotta
 accent (`#DD6440`), squircle border-radius (19 px tiles), Space Grotesk +
-Space Mono (self-hosted). Light and dark modes via `prefers-color-scheme` and
-Tailwind `dark:` variants.
+Space Mono (loaded from Google Fonts). Light/dark mode is a manual toggle
+(`ThemeToggle`, top-right on Login and Home) backed by a `dark` class on
+`<html>` and persisted to `localStorage`; it defaults to the OS preference on
+first visit. Tailwind's `darkMode` is set to `"class"`, not `"media"`.
 
 ## Platform API (`/platform/`)
 
@@ -169,13 +178,16 @@ auth routes are exempt.
 
 ### Authentication
 
-The server reads `POCKETKNIFE_ADMIN_PASSWORD` at startup. If absent it generates
-a random password, prints it once to stdout, and uses that for the session. The
-password is bcrypt-hashed in memory and never written to disk.
+The server reads `POCKETKNIFE_ADMIN_EMAIL` and `POCKETKNIFE_ADMIN_PASSWORD` at
+startup. `POCKETKNIFE_ADMIN_EMAIL` defaults to `admin@pocketknife.local` if
+unset. If `POCKETKNIFE_ADMIN_PASSWORD` is absent, the server generates a random
+password and prints it once to stdout alongside the admin email. The password
+is bcrypt-hashed in memory and never written to disk; there is a single admin
+identity, not a user table.
 
 | Method & path | Action |
 |---------------|--------|
-| `POST /platform/auth/login` | Body `{"password":"..."}`. On success: 200 + HttpOnly SameSite=Strict `pk_session` cookie (24h TTL, sliding renewal). On failure: 401 with a ≥ 200 ms floor to slow brute force. |
+| `POST /platform/auth/login` | Body `{"email":"...","password":"..."}`. On success: 200 + HttpOnly SameSite=Strict `pk_session` cookie (24h TTL, sliding renewal). On failure: 401 with a ≥ 200 ms floor to slow brute force. |
 | `POST /platform/auth/logout` | Clears the cookie and invalidates the token. |
 
 ### App registry
@@ -247,7 +259,7 @@ validation layer.
 
 ```json
 {
-  "app": { "id": "reading_tracker", "name": "Reading Tracker", "emoji": "📚", "version": 1 },
+  "app": { "id": "reading_tracker", "name": "Reading Tracker", "emoji": "📚", "color": "#8E86CF", "version": 1 },
   "entities": [
     {
       "id": "ent_book",
@@ -270,8 +282,10 @@ Rules:
   scope, non-empty. Convention `ent_*` / `fld_*` (convention, not enforced).
 - `name` (entities, fields) is the SQL identifier **and** JSON key. It must match
   `^[a-z][a-z0-9_]*$`, be unique among siblings, and must not be a reserved
-  platform name (`id`, `created_at`, `updated_at`). `app.name` / `app.emoji` are
-  free-form display values.
+  platform name (`id`, `created_at`, `updated_at`). `app.name` / `app.emoji` /
+  `app.color` are free-form display values; `app.emoji` and `app.color` seed
+  the shell launcher's tile (see [Shell launcher](#shell-launcher)) the first
+  time the app is registered and can be edited afterward via the registry API.
 - `operations` is optional per entity (default: all four). Subsetting it
   restricts the API surface; a disabled operation returns **405**.
 - Unknown top-level keys, unknown field keys, constraint keys not allowed for a
@@ -456,7 +470,7 @@ curl -s localhost:8080/apps/tasks/task/<task_id>   # "project": null
 ```sh
 # login
 curl -s -c cookies.txt -X POST localhost:8080/platform/auth/login \
-  -H 'Content-Type: application/json' -d '{"password":"<your-password>"}'
+  -H 'Content-Type: application/json' -d '{"email":"<your-email>","password":"<your-password>"}'
 
 # list apps (requires cookie)
 curl -s -b cookies.txt localhost:8080/platform/registry | jq .
@@ -554,8 +568,10 @@ it, which is a deliberate, separately-tracked gap, not an oversight.
 
 On success the app is reachable at `/ui/<app_id>/` with no server restart,
 exactly like any other activated build. The newly deployed app also receives a
-default `app_meta` row (emoji `📦`, grid order auto-assigned) so it
-immediately appears in the shell launcher's home grid.
+default `app_meta` row — emoji and color seeded from the manifest's
+`app.emoji` / `app.color` (falling back to `📦` / `#E0E0E0` if either is
+omitted), grid order auto-assigned — so it immediately appears in the shell
+launcher's home grid.
 
 ## Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
 

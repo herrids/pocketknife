@@ -77,18 +77,26 @@ func (ss *sessionStore) reapLoop() {
 	}
 }
 
-// authState holds the hashed password and session store for the platform server.
+// authState holds the admin email, hashed password and session store for the
+// platform server.
 type authState struct {
+	email    string
 	hash     []byte
 	sessions *sessionStore
 }
 
-// newAuthState reads POCKETKNIFE_ADMIN_PASSWORD; if absent, generates and prints one.
+// newAuthState reads POCKETKNIFE_ADMIN_EMAIL and POCKETKNIFE_ADMIN_PASSWORD;
+// if the password is absent, generates and prints one alongside the email.
 func newAuthState() (*authState, error) {
+	email := os.Getenv("POCKETKNIFE_ADMIN_EMAIL")
+	if email == "" {
+		email = "admin@pocketknife.local"
+	}
 	pw := os.Getenv("POCKETKNIFE_ADMIN_PASSWORD")
 	if pw == "" {
 		pw = randomPassword(16)
 		fmt.Printf("\n╔══════════════════════════════════════════╗\n")
+		fmt.Printf("║  POCKETKNIFE ADMIN EMAIL:    %-12s ║\n", email)
 		fmt.Printf("║  POCKETKNIFE ADMIN PASSWORD: %-12s ║\n", pw)
 		fmt.Printf("╚══════════════════════════════════════════╝\n\n")
 	}
@@ -96,7 +104,7 @@ func newAuthState() (*authState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("hash admin password: %w", err)
 	}
-	return &authState{hash: h, sessions: newSessionStore()}, nil
+	return &authState{email: email, hash: h, sessions: newSessionStore()}, nil
 }
 
 func randomPassword(n int) string {
@@ -116,16 +124,18 @@ func (a *authState) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
 		return
 	}
-	err := bcrypt.CompareHashAndPassword(a.hash, []byte(body.Password))
-	if err != nil {
+	emailOK := strings.EqualFold(strings.TrimSpace(body.Email), a.email)
+	passErr := bcrypt.CompareHashAndPassword(a.hash, []byte(body.Password))
+	if !emailOK || passErr != nil {
 		time.Sleep(loginFailDelay)
-		writeError(w, http.StatusUnauthorized, "invalid_password", "invalid password")
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 		return
 	}
 	tok := a.sessions.issue()
