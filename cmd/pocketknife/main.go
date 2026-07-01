@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"pocketknife/api"
 	"pocketknife/assets"
@@ -32,6 +33,7 @@ import (
 )
 
 func main() {
+	loadDotEnv(".env")
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "migrate":
@@ -43,6 +45,36 @@ func main() {
 		}
 	}
 	runServe(os.Args[1:])
+}
+
+// loadDotEnv reads path as KEY=VALUE lines (blank lines and #-comments
+// ignored, values may be quoted) and calls os.Setenv for any key not already
+// present in the environment, so an explicit `FOO=bar ./pocketknife` always
+// wins over the file. A missing file is not an error: config may come from
+// the environment directly (e.g. under systemd/docker, or in production
+// where no .env ships alongside the binary). Mirrors the semantics of
+// agent/src/env.ts on the Node side, so both halves of the app are
+// self-sufficient regardless of how they're launched.
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		if _, exists := os.LookupEnv(key); !exists {
+			os.Setenv(key, val)
+		}
+	}
 }
 
 func runServe(args []string) {
@@ -106,7 +138,7 @@ func runServe(args []string) {
 		}
 	}
 
-	platformServer, err := platform.NewServer(bst, reg, *agentBin)
+	platformServer, err := platform.NewServer(bst, reg, *agentBin, *addr)
 	if err != nil {
 		log.Fatalf("init platform server: %v", err)
 	}

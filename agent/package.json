@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "agent": "tsx --env-file=.env src/cli.ts",
+    "agent": "tsx src/cli.ts",
     "build": "tsc --noEmit",
     "test": "tsx --test $(find src -name '*.test.ts')"
   },

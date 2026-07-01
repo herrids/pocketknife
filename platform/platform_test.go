@@ -104,7 +104,7 @@ func newTestServer(t *testing.T) (http.Handler, *build.Store) {
 	reg := registry.New()
 	t.Setenv("POCKETKNIFE_ADMIN_EMAIL", "admin@pocketknife.local")
 	t.Setenv("POCKETKNIFE_ADMIN_PASSWORD", "testpass123")
-	srv, err := platform.NewServer(st, reg, "")
+	srv, err := platform.NewServer(st, reg, "", ":8080")
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

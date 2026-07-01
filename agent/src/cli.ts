@@ -14,6 +14,8 @@
 //                    stdin; emits turn/plan/ready/error/done events to stdout.
 // --prompt <text>    Provide initial prompt as a flag (used by --bridge-mode).
 
+import "./env.js";
+
 import { createInterface } from "node:readline/promises";
 import { readFile } from "node:fs/promises";
 

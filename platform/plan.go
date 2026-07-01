@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -49,27 +51,54 @@ type checkItem struct {
 
 // planSession tracks one live planning session.
 type planSession struct {
-	id          string
-	state       sessionState
-	appID       string // set once the agent emits ready
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	events      []bridgeEvent // rolling buffer, max eventBufferSize
-	subs        []chan bridgeEvent
+	id           string
+	state        sessionState
+	appID        string // set once the agent emits ready
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	events       []bridgeEvent // rolling buffer, max eventBufferSize
+	subs         []chan bridgeEvent
 	lastActivity time.Time
-	mu          sync.Mutex
+	mu           sync.Mutex
 }
 
 // planServer manages all planning sessions.
 type planServer struct {
 	agentBin string
+	baseURL  string   // this server's own address, passed to agent subprocesses as GO_BASE_URL
 	sessions sync.Map // sessionID → *planSession
 }
 
-func newPlanServer(agentBin string) *planServer {
-	ps := &planServer{agentBin: agentBin}
+func newPlanServer(agentBin, addr string) *planServer {
+	ps := &planServer{agentBin: agentBin, baseURL: baseURLFromAddr(addr)}
 	go ps.reapLoop()
 	return ps
+}
+
+// envWithout returns env with any entry for key removed, so the caller can
+// append its own authoritative KEY=VALUE without risking an ambiguous
+// duplicate entry in the child process's environment.
+func envWithout(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0:0]
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, prefix) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// baseURLFromAddr turns a listen address (e.g. ":8080", "0.0.0.0:8080") into
+// a URL an agent subprocess running on the same machine can call back on.
+// The host is always localhost: the agent is always a local child process,
+// regardless of what host the server is publicly bound to.
+func baseURLFromAddr(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return "http://localhost:8080"
+	}
+	return "http://localhost:" + port
 }
 
 func (ps *planServer) route(mux *http.ServeMux) {
@@ -145,6 +174,7 @@ func (ps *planServer) startSession(prompt, appID string) (*planSession, error) {
 	}
 
 	cmd := exec.Command(agentBin, args...)
+	cmd.Env = append(envWithout(os.Environ(), "GO_BASE_URL"), "GO_BASE_URL="+ps.baseURL)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)

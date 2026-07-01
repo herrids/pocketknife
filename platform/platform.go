@@ -17,7 +17,10 @@ import (
 // NewServer returns an http.Handler that serves all /platform/ routes. It
 // initialises the admin password (from env or generated) at call time, so any
 // generated password is printed before the server starts accepting connections.
-func NewServer(bst *build.Store, reg *registry.Registry, agentBin string) (http.Handler, error) {
+// addr is the address this server itself listens on (e.g. ":8080"); it is
+// passed to spawned agent subprocesses as GO_BASE_URL so they can call back
+// into this server without needing that value configured separately.
+func NewServer(bst *build.Store, reg *registry.Registry, agentBin, addr string) (http.Handler, error) {
 	auth, err := newAuthState()
 	if err != nil {
 		return nil, err
@@ -34,7 +37,7 @@ func NewServer(bst *build.Store, reg *registry.Registry, agentBin string) (http.
 	rs.route(inner)
 
 	// Agent bridge.
-	ps := newPlanServer(agentBin)
+	ps := newPlanServer(agentBin, addr)
 	ps.route(inner)
 
 	// Wrap the whole mux with the auth guard.
