@@ -388,14 +388,15 @@ func (s *Store) UpsertAppMeta(m AppMeta) error {
 
 // EnsureAppMeta inserts a default app_meta row if one does not already exist,
 // seeded from the manifest's own emoji/color (falling back to a generic
-// default for either one the manifest left blank). It assigns grid_order as
+// default for emoji, and a deterministic palette pick for color, for
+// whichever one the manifest left blank). It assigns grid_order as
 // MAX(grid_order)+1.
 func (s *Store) EnsureAppMeta(appID, displayName, emoji, color string) error {
 	if emoji == "" {
 		emoji = "📦"
 	}
 	if color == "" {
-		color = "#E0E0E0"
+		color = pickDefaultColor(appID)
 	}
 	var maxOrder int
 	row := s.db.QueryRow(`SELECT COALESCE(MAX(grid_order)+1, 0) FROM app_meta`)
@@ -408,6 +409,35 @@ func (s *Store) EnsureAppMeta(appID, displayName, emoji, color string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("ensure app_meta %s: %w", appID, err)
+	}
+	return nil
+}
+
+// SyncAppMetaFromManifest brings an already-registered app's emoji/color up
+// to date with its current manifest, but only where the stored value is
+// still exactly the generic seed default (i.e. it was never customized away
+// from what EnsureAppMeta first assigned). This lets manifests that gain an
+// emoji/color after an app was first registered — or a palette pick that
+// simply didn't exist yet — take effect on a later boot, without ever
+// clobbering a real customization made through the registry PATCH endpoint.
+func (s *Store) SyncAppMetaFromManifest(appID, manifestEmoji, manifestColor string) error {
+	if manifestEmoji != "" {
+		if _, err := s.db.Exec(
+			`UPDATE app_meta SET emoji = ? WHERE app_id = ? AND emoji = '📦'`,
+			manifestEmoji, appID,
+		); err != nil {
+			return fmt.Errorf("sync app_meta emoji %s: %w", appID, err)
+		}
+	}
+	color := manifestColor
+	if color == "" {
+		color = pickDefaultColor(appID)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE app_meta SET color = ? WHERE app_id = ? AND color = '#E0E0E0'`,
+		color, appID,
+	); err != nil {
+		return fmt.Errorf("sync app_meta color %s: %w", appID, err)
 	}
 	return nil
 }
