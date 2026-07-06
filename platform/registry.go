@@ -47,26 +47,16 @@ func (rs *registryServer) handleList(w http.ResponseWriter, r *http.Request) {
 			GridOrder:   m.GridOrder,
 			BuildState:  "none",
 		}
-		// Attempt to find the most recent non-terminal job for this app.
+		// The most recent job for this app (if any) determines buildState,
+		// including terminal states ("ready", "failed") so a failed first
+		// install stays visible instead of silently reverting to "none".
 		jobs, _ := rs.bst.ListForApp(m.AppID)
-		for _, j := range jobs {
-			if j.State != build.StateReady && j.State != build.StateFailed {
-				state := string(j.State)
-				e.BuildState = state
-				e.ActiveBuildID = &j.ID
-				v := j.ManifestVersion
-				e.ManifestVersion = &v
-				break
-			}
-			if j.State == build.StateReady {
-				state := "ready"
-				e.BuildState = state
-				e.ActiveBuildID = &j.ID
-				v := j.ManifestVersion
-				e.ManifestVersion = &v
-				break
-			}
-			break
+		if len(jobs) > 0 {
+			j := jobs[0]
+			e.BuildState = string(j.State)
+			e.ActiveBuildID = &j.ID
+			v := j.ManifestVersion
+			e.ManifestVersion = &v
 		}
 		entries = append(entries, e)
 	}
