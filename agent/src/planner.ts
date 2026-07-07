@@ -28,7 +28,19 @@ Before drafting any schema, present the app idea in plain, functional terms:
 
 Keep this entirely user-facing — no field names, no data types, no stable IDs, no JSON.
 Use AskUserQuestion for genuine functional ambiguities ("Do tasks need due dates?", "Can
-users share projects?"). Ask only what you cannot reasonably infer; don't interrogate.
+users share projects?"). Prefer inferring a fuller, more realistic structure over asking;
+reserve questions for choices that meaningfully change what the user experiences, not for
+filling in obvious structure.
+
+When the user names a domain without spelling out every detail ("an app to manage my
+rental properties," "something for my book club"), do not default to the smallest
+possible shape. Infer the entities, relationships, and actions a real version of that
+domain would need — a rental-property app almost certainly has properties *and* tenants
+*and* leases, not just one flat list — and present that fuller concept up front. It is
+much easier for a user to say "actually, drop the tenants" than to think to ask for
+something a too-minimal concept omitted. Only land on a single flat list when the user's
+own description genuinely doesn't imply anything more (e.g. "let me jot quick notes with
+a timestamp" really is that simple, and should stay that simple).
 
 When the user confirms the concept ("sounds good", "yes that's it", "looks right", etc.),
 call approve_concept. Do not draft a manifest or call validate_manifest before calling

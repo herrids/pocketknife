@@ -55,13 +55,13 @@ available; avoid inventing a generic "json" or "object" field — it does not ex
 
 | type        | meaning                | constraint keys you may set                       | example |
 |-------------|------------------------|-----------------------------------------------------|---------|
-| `text`      | UTF-8 string           | `required`, `unique`, `default`, `min`/`max` (length)  | a title, a note |
-| `integer`   | 64-bit whole number    | `required`, `unique`, `default`, `min`/`max` (value)   | a page count, a star rating |
-| `real`      | floating point number  | `required`, `unique`, `default`, `min`/`max` (value)   | a price, a weight |
-| `boolean`   | true/false             | `required`, `default`                                | a "done" flag |
-| `datetime`  | ISO-8601 UTC instant   | `required`, `default`                                | a due date, a logged-at time |
+| `text`      | UTF-8 string           | `required`, `unique`, `default`, `min`/`max` (length)  | a product name, a recipe's ingredient list |
+| `integer`   | 64-bit whole number    | `required`, `unique`, `default`, `min`/`max` (value)   | a quantity in stock, a table's seat count |
+| `real`      | floating point number  | `required`, `unique`, `default`, `min`/`max` (value)   | a price, a package's weight |
+| `boolean`   | true/false             | `required`, `default`                                | an "in stock" flag |
+| `datetime`  | ISO-8601 UTC instant   | `required`, `default`                                | a due date, a reservation's start time |
 | `enum`      | one of a fixed string set | `required`, `default`, `values` (required, non-empty) | a priority, a status |
-| `reference` | points at another entity's row | `required`, `target` (required, an entity id), `onDelete` | a task's project |
+| `reference` | points at another entity's row | `required`, `target` (required, an entity id), `onDelete` | a reservation's room, a comment's parent comment |
 
 Every field needs `id`, `name`, `type`. Setting a constraint key that isn't in that
 field's list above will fail validation (e.g. `values` on a `text` field).
@@ -77,8 +77,12 @@ error if you get one:
 - `onDelete` on a reference is `set_null` (default), `restrict`, or `cascade` — what
   happens to this field when the row it points at is deleted.
 - `operations` on an entity (optional, default: all four) is a subset of
-  `["create", "read", "update", "delete"]` — use it to make an entity append-only
-  (`["create", "read"]`) or read-only, etc.
+  `["create", "read", "update", "delete"]` — use it to restrict what's possible on that
+  entity. For example, `["create", "read"]` makes an entity append-only (no edits, no
+  deletes) — useful for an entity that's a record of things that happened, like a
+  journal entry or an audit trail — while `["read"]` alone makes it read-only. Only use
+  this when the user's domain actually calls for the restriction; most entities want all
+  four.
 
 ## Validation is mandatory — never assert validity yourself
 
@@ -95,6 +99,20 @@ the frontend-authoring stage will build against later; you don't need to do anyt
 with it yourself beyond knowing the manifest is now final.
 
 ## Worked examples
+
+These examples exist to show what the schema language can *express* — one-to-many,
+many-to-many, self-reference, mixed operation subsets, enums, uniqueness — not to hand
+you a menu of app shapes to pick from. A real user's app is its own domain: derive its
+entities, fields, and relationships from what they actually described. Real domains vary
+far more than these three examples — inventory systems, marketplaces, habit trackers,
+recipe boxes, expense splitters, room bookings, and many others each have their own
+nouns, relationships, and rules. Model *that* domain, don't reshape it to fit an example
+below.
+
+If a user's request is genuinely a single flat list with no relationships (e.g. "let me
+jot down quick notes with a timestamp"), a one-entity manifest is the right and honest
+answer — but reach that conclusion because the domain is that simple, not because it's
+the easiest shape to imitate.
 
 ### 1. A tracker (one entity, full CRUD, every constraint kind)
 
@@ -117,50 +135,41 @@ with it yourself beyond knowing the manifest is now final.
 }
 ```
 
-### 2. An append-only log (create + read only — no edits, no deletes)
+### 2. Many-to-many via a junction entity
+
+A `reservation` sits between `guest` and `room`, referencing both — the standard way to
+model a many-to-many relationship (a guest can have many reservations, a room can have
+many reservations) plus its own fields (a time range, a status):
 
 ```json
 {
-  "app": { "id": "gratitude_log", "name": "Gratitude Log", "emoji": "🙏", "version": 1 },
+  "app": { "id": "room_booking", "name": "Room Booking", "emoji": "🗓️", "version": 1 },
   "entities": [
     {
-      "id": "ent_entry",
-      "name": "entry",
-      "operations": ["create", "read"],
+      "id": "ent_guest",
+      "name": "guest",
       "fields": [
-        { "id": "fld_text",      "name": "text",      "type": "text",     "required": true },
-        { "id": "fld_logged_at", "name": "logged_at", "type": "datetime" }
-      ]
-    }
-  ]
-}
-```
-
-### 3. Two entities with a reference, an enum, and a uniqueness constraint
-
-```json
-{
-  "app": { "id": "tasks", "name": "Tasks", "emoji": "✅", "version": 1 },
-  "entities": [
-    {
-      "id": "ent_project",
-      "name": "project",
-      "fields": [
-        { "id": "fld_name", "name": "name", "type": "text", "required": true, "unique": true }
+        { "id": "fld_name", "name": "name", "type": "text", "required": true }
       ]
     },
     {
-      "id": "ent_task",
-      "name": "task",
+      "id": "ent_room",
+      "name": "room",
       "fields": [
-        { "id": "fld_title",    "name": "title",    "type": "text", "required": true },
+        { "id": "fld_label", "name": "label", "type": "text", "required": true, "unique": true }
+      ]
+    },
+    {
+      "id": "ent_reservation",
+      "name": "reservation",
+      "fields": [
+        { "id": "fld_guest", "name": "guest", "type": "reference", "target": "ent_guest", "onDelete": "cascade" },
+        { "id": "fld_room",  "name": "room",  "type": "reference", "target": "ent_room",  "onDelete": "cascade" },
+        { "id": "fld_starts_at", "name": "starts_at", "type": "datetime", "required": true },
+        { "id": "fld_ends_at",   "name": "ends_at",   "type": "datetime", "required": true },
         {
-          "id": "fld_project", "name": "project", "type": "reference",
-          "target": "ent_project", "onDelete": "set_null"
-        },
-        {
-          "id": "fld_priority", "name": "priority", "type": "enum",
-          "values": ["low", "medium", "high"], "default": "medium"
+          "id": "fld_status", "name": "status", "type": "enum",
+          "values": ["pending", "confirmed", "cancelled"], "default": "pending"
         }
       ]
     }
@@ -168,6 +177,43 @@ with it yourself beyond knowing the manifest is now final.
 }
 ```
 
-These three shapes — single tracker, append-only log, two entities joined by a
-reference — cover almost every app a user will describe. Reach for the closest one and
-adapt field names and types to what they actually asked for.
+### 3. Self-reference and a plain one-to-many
+
+A `category` can nest under a parent category — a `reference` field whose `target` is
+its own entity. `product` is an ordinary one-to-many off of `category`:
+
+```json
+{
+  "app": { "id": "catalog", "name": "Catalog", "emoji": "🗂️", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_category",
+      "name": "category",
+      "fields": [
+        { "id": "fld_name", "name": "name", "type": "text", "required": true, "unique": true },
+        {
+          "id": "fld_parent", "name": "parent", "type": "reference",
+          "target": "ent_category", "onDelete": "set_null"
+        }
+      ]
+    },
+    {
+      "id": "ent_product",
+      "name": "product",
+      "fields": [
+        { "id": "fld_name", "name": "name", "type": "text", "required": true },
+        { "id": "fld_price", "name": "price", "type": "real", "min": 0 },
+        {
+          "id": "fld_category", "name": "category", "type": "reference",
+          "target": "ent_category", "onDelete": "set_null"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Not every domain needs relationships at all, and not every relationship is one of these
+two shapes — a domain might need several one-to-many chains, a junction entity with its
+own fields, or none of the above. Use these to recognize the pattern when the user's
+domain calls for it, not to force their domain into one of them.

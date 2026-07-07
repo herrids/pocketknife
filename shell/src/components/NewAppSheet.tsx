@@ -3,15 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 
 const SUGGESTIONS = [
-  { emoji: "🪴", label: "Plant waterer" },
-  { emoji: "🙏", label: "Gratitude log" },
+  { emoji: "🗓️", label: "Room booking" },
   { emoji: "🧾", label: "Split the bill" },
-  { emoji: "📚", label: "Reading tracker" },
-  { emoji: "💧", label: "Water tracker" },
-  { emoji: "🏋️", label: "Workout log" },
-  { emoji: "💸", label: "Budget tracker" },
-  { emoji: "✍️", label: "Journal" },
   { emoji: "🍳", label: "Recipe box" },
+  { emoji: "🎬", label: "Movie watchlist" },
+  { emoji: "🎒", label: "Gear inventory" },
+  { emoji: "🔁", label: "Habit streaks" },
+  { emoji: "🥗", label: "Meal planner" },
+  { emoji: "📚", label: "Reading tracker" },
+  { emoji: "🙏", label: "Gratitude log" },
 ];
 
 function shuffled<T>(arr: T[]): T[] {
@@ -98,7 +98,7 @@ export function NewAppSheet({ onClose }: NewAppSheetProps) {
             className="w-full h-full min-h-[120px] resize-none bg-card dark:bg-[#28231C] rounded-xl p-4 text-sm text-ink dark:text-[#F3ECDD] placeholder:text-ink-faint outline-none focus:ring-2 focus:ring-terracotta/30"
             placeholder={
               tab === "describe"
-                ? "A tracker for the books I'm reading — let me add a title and author, log pages, and mark when I finish."
+                ? "A book club app — the books we're reading, who's in the club, and who's finished which book."
                 : "Paste your frontend code here…"
             }
             value={text}

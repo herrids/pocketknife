@@ -4,72 +4,77 @@
 
 /*
  * Design tokens (shadcn/ui convention). Every color is an HSL triplet consumed
- * as hsl(var(--token)) by tailwind.config.ts. To re-skin an app to its own
- * accent, change --primary / --ring / --accent here once — every component
- * that uses the semantic token follows. The :root block is light mode; .dark
- * is dark mode (toggled by adding `class="dark"` on <html>).
+ * as hsl(var(--token)) by tailwind.config.ts. The base palette below (canvas,
+ * surface, ink, terracotta) is drawn from the shell's own brand
+ * (shell/src/index.css, shell/tailwind.config.ts) so every generated app
+ * starts in the same design family as the launcher it lives in. To give an
+ * app its own identity, vary --primary / --ring / --accent's *hue* only —
+ * leave --background / --foreground / --card and the rest of the base
+ * palette as given, so apps still read as one consistent system. The :root
+ * block is light mode; .dark is dark mode (toggled by adding `class="dark"`
+ * on <html>).
  */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --background: 40 34% 86%;
+    --foreground: 40 18% 10%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card: 40 41% 91%;
+    --card-foreground: 40 18% 10%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
+    --popover: 40 41% 91%;
+    --popover-foreground: 40 18% 10%;
 
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
+    --primary: 14 70% 56%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
+    --secondary: 40 30% 94%;
+    --secondary-foreground: 40 18% 10%;
 
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
+    --muted: 40 25% 92%;
+    --muted-foreground: 36 10% 49%;
 
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
+    --accent: 40 30% 94%;
+    --accent-foreground: 40 18% 10%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
 
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 10% 3.9%;
+    --border: 40 20% 80%;
+    --input: 40 20% 80%;
+    --ring: 14 70% 56%;
 
-    --radius: 0.75rem;
+    --radius: 1rem;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
+    --background: 38 17% 9%;
+    --foreground: 41 48% 91%;
 
-    --card: 240 10% 5.9%;
-    --card-foreground: 0 0% 98%;
+    --card: 35 18% 13%;
+    --card-foreground: 41 48% 91%;
 
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
+    --popover: 35 18% 13%;
+    --popover-foreground: 41 48% 91%;
 
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
+    --primary: 14 70% 56%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
+    --secondary: 35 15% 18%;
+    --secondary-foreground: 41 48% 91%;
 
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
+    --muted: 35 15% 18%;
+    --muted-foreground: 37 12% 56%;
 
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
+    --accent: 35 15% 18%;
+    --accent-foreground: 41 48% 91%;
 
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 0 0% 98%;
 
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --border: 35 15% 18%;
+    --input: 35 15% 18%;
+    --ring: 14 70% 56%;
   }
 }
 
@@ -80,6 +85,7 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
     font-feature-settings: "rlig" 1, "calt" 1;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;

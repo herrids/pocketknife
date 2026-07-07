@@ -83,9 +83,14 @@ The scaffold gives you the materials. Use them instead of reinventing them.
   the underlying Radix primitives are installed.
 - **Styling = semantic tokens only.** Style with Tailwind classes bound to the design
   tokens (`bg-background`, `text-foreground`, `bg-primary`, `text-muted-foreground`,
-  `border`, `bg-card`, …). **Never hard-code hex colors.** To give the app its own
-  accent, change `--primary` / `--ring` / `--accent` in `src/index.css` once — pick a
-  hue that fits the app's purpose. Light + dark are both defined; keep both working.
+  `border`, `bg-card`, …). **Never hard-code hex colors.** The base palette in
+  `src/index.css` (`--background`, `--foreground`, `--card`, `--muted`, `--border`, …) is
+  shared across every generated app on purpose — it's what makes apps feel like one
+  family. Leave those alone. To give this app its own identity, change only
+  `--primary` / `--ring` / `--accent`'s *hue* in `src/index.css`, keeping their
+  saturation/lightness in the same range as the default — pick a hue that fits the
+  app's purpose without changing how light, saturated, or dark the accent reads. Light
+  + dark are both defined; keep both working.
 - **Dark mode** is ready: `useTheme()` from `@/lib/use-theme` toggles and persists it.
   Wire it to a header button (a `Sun`/`Moon` icon).
 - **`cn()`** from `@/lib/utils` merges conditional class lists.
