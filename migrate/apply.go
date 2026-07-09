@@ -64,6 +64,18 @@ func Apply(ctx context.Context, reg *registry.Registry, appID string, newManifes
 	}
 
 	if cs.IsEmpty() {
+		// No data migration to run — but Diff only covers entities, so a new
+		// version can still change everything else the manifest declares
+		// (functions, frontend, name, emoji). If the version moved, the new
+		// manifest must still be promoted on disk and re-registered, or a
+		// deploy that only adds a prompt function would be silently dropped
+		// and lost on restart. NoChange stays true: it describes the data.
+		if newApp.Version != oldApp.Version {
+			if err := os.WriteFile(filepath.Join(ra.Dir, "manifest.json"), newManifest, 0o644); err != nil {
+				return nil, fmt.Errorf("promoting manifest.json failed: %w", err)
+			}
+			reg.Register(&registry.RegisteredApp{Schema: newApp, Store: ra.Store, Dir: ra.Dir, AssetDir: ra.AssetDir})
+		}
 		return &Result{Changeset: cs, NoChange: true}, nil
 	}
 

@@ -31,6 +31,24 @@ const notesV2 = `{
   "frontend": { "dist": "frontend/dist" }
 }`
 
+const notesV2FunctionOnly = `{
+  "app": { "id": "notes", "name": "Notes", "version": 2 },
+  "entities": [
+    { "id": "ent_note", "name": "note", "fields": [
+      { "id": "fld_title", "name": "title", "type": "text", "required": true }
+    ]}
+  ],
+  "frontend": { "dist": "frontend/dist" },
+  "functions": [
+    {
+      "id": "fn_summarize",
+      "name": "summarize",
+      "prompt": "Summarize: {{text}}",
+      "capabilities": { "model": true }
+    }
+  ]
+}`
+
 const notesV3NoFrontend = `{
   "app": { "id": "notes", "name": "Notes", "version": 3 },
   "entities": [
@@ -107,6 +125,54 @@ func TestDeployInstallFailureIsLegibleAndRetriable(t *testing.T) {
 	}
 	if res2.Job.State != StateReady {
 		t.Fatalf("retry job state = %s, want ready", res2.Job.State)
+	}
+}
+
+// TestDeployFunctionOnlyVersionBumpRegistersTheFunction covers a second
+// deploy whose only change is adding a prompt function: the entity diff is
+// empty, so no data migration runs, but the new schema must still be
+// registered and the manifest promoted — otherwise the function is silently
+// dropped and the app reverts on restart.
+func TestDeployFunctionOnlyVersionBumpRegistersTheFunction(t *testing.T) {
+	appsDir := t.TempDir()
+	reg := bootTestApp(t, appsDir, "notes", notesV1)
+	writeDist(t, appsDir, "notes", "frontend/dist", "v1")
+	bst := openTestStore(t)
+
+	if _, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV1), DeployOptions{}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	raV1, _ := reg.App("notes")
+	noteID := insertNote(t, raV1, "keep me")
+
+	res, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV2FunctionOnly), DeployOptions{})
+	if err != nil {
+		t.Fatalf("second deploy: %v", err)
+	}
+	if res.Job.Kind != KindDeploy || res.Job.State != StateReady {
+		t.Fatalf("job = %s/%s, want deploy/ready", res.Job.Kind, res.Job.State)
+	}
+
+	ra, _ := reg.App("notes")
+	if ra.Schema.Version != 2 {
+		t.Errorf("registered version = %d, want 2", ra.Schema.Version)
+	}
+	if ra.Schema.Function("summarize") == nil {
+		t.Error("prompt function missing from the registered schema after deploy")
+	}
+
+	onDisk, err := os.ReadFile(filepath.Join(appsDir, "notes", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != notesV2FunctionOnly {
+		t.Error("manifest.json was not promoted to the function-bearing version")
+	}
+
+	// Data survived untouched.
+	row, err := ra.Store.GetByID(ra.Schema.Entity("note"), noteID)
+	if err != nil || row == nil {
+		t.Fatalf("seeded note lost across the function-only deploy: %v", err)
 	}
 }
 

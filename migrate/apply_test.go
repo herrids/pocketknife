@@ -210,3 +210,63 @@ func TestApplyNoChange(t *testing.T) {
 		t.Fatal("identical manifest should report NoChange")
 	}
 }
+
+// TestApplyEmptyDiffStillPromotesNewVersion covers a version bump whose only
+// change is outside the entity schema (here: adding a prompt function). Diff
+// is empty, so no data migration runs — but the new manifest must still be
+// promoted on disk and re-registered, or the function is silently dropped and
+// lost on restart.
+func TestApplyEmptyDiffStillPromotesNewVersion(t *testing.T) {
+	const v2WithFunction = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "title", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" }
+        ]}
+      ],
+      "functions": [
+        {
+          "id": "fn_summarize",
+          "name": "summarize",
+          "prompt": "Summarize: {{text}}",
+          "capabilities": { "model": true }
+        }
+      ]
+    }`
+
+	reg, dir := setupReg(t, "tracker", applyV1)
+	id := seedReg(t, reg, "tracker", "item", map[string]any{"title": "keep", "count": int64(1)})
+
+	res, err := Apply(context.Background(), reg, "tracker", []byte(v2WithFunction), Options{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !res.NoChange {
+		t.Fatal("an entity-identical manifest should still report NoChange (no data moved)")
+	}
+
+	// The registry serves the new schema, including the function.
+	ra, _ := reg.App("tracker")
+	if ra.Schema.Version != 2 {
+		t.Errorf("registered version = %d, want 2", ra.Schema.Version)
+	}
+	if ra.Schema.Function("summarize") == nil {
+		t.Error("prompt function missing from the re-registered schema")
+	}
+
+	// The on-disk manifest (source of truth for the next boot) was promoted.
+	onDisk, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != v2WithFunction {
+		t.Error("manifest.json was not promoted to the new version")
+	}
+
+	// Data is untouched and the store handle still works.
+	row, err := ra.Store.GetByID(ra.Schema.Entity("item"), id)
+	if err != nil || row == nil {
+		t.Fatalf("seeded row lost after promotion: %v", err)
+	}
+}
