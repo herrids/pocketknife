@@ -68,6 +68,7 @@ assets/           serves each app's activated frontend bundle (/ui/)
 client/           typed TypeScript client generator (pure fn of the schema)
 sandbox/          capability-checked WebAssembly sandbox for functions
 broker/           the only path from a function to a model provider
+funcrun/          executes declared functions: prompt render + broker, or wasm + sandbox
 consent/          derives an app's union capability surface from the manifest
 platform/         session auth + registry API + agent bridge (all /platform/ routes)
 shellserve/       serves the compiled shell SPA (shell/dist/) at /
@@ -189,6 +190,21 @@ identity, not a user table.
 |---------------|--------|
 | `POST /platform/auth/login` | Body `{"email":"...","password":"..."}`. On success: 200 + HttpOnly SameSite=Strict `pk_session` cookie (24h TTL, sliding renewal). On failure: 401 with a ≥ 200 ms floor to slow brute force. |
 | `POST /platform/auth/logout` | Clears the cookie and invalidates the token. |
+
+### Model provider
+
+Prompt functions (and wasm functions' `model_call`) go through the model broker,
+whose provider is selected once at boot from the environment (`.env` is read):
+
+| Variable | Effect |
+|----------|--------|
+| `ANTHROPIC_API_KEY` | Use the Anthropic Messages API. Wins over the generic endpoint. |
+| `POCKETKNIFE_MODEL` | Optional model override for the Anthropic caller (defaults to a current Claude model). |
+| `POCKETKNIFE_MODEL_ENDPOINT` + `POCKETKNIFE_MODEL_TOKEN` | Fallback: a generic HTTP provider speaking `{"prompt"}` → `{"text"}` with a bearer token. |
+| *(none set)* | The broker is unconfigured; every model call answers `503 model_not_configured`. |
+
+The credential is read once, held unexported inside the broker, and never
+reaches a function, a manifest, or the browser.
 
 ### App registry
 
@@ -315,10 +331,7 @@ millisecond precision and a literal `Z` (e.g. `2026-06-21T15:21:58.940Z`).
 
 ### Optional: `frontend` and `functions`
 
-Two optional top-level keys extend an app beyond a bare API. Both point at
-**pre-built** artifacts — pocketknife never compiles a frontend or a function
-on-box; the manifest only references output that already exists, relative to the
-app directory.
+Two optional top-level keys extend an app beyond a bare API.
 
 ```json
 {
@@ -329,7 +342,14 @@ app directory.
     {
       "id": "fn_summarize",
       "name": "summarize",
-      "entry": "functions/summarize.wasm",
+      "prompt": "Summarize the following task list in a {{tone}} tone:\n\n{{tasks}}",
+      "description": "Summarizes the visible tasks.",
+      "capabilities": { "model": true }
+    },
+    {
+      "id": "fn_digest",
+      "name": "digest",
+      "entry": "functions/digest.wasm",
       "capabilities": {
         "data":    [ { "entity": "ent_task", "operations": ["read"] } ],
         "network": ["api.example.com"],
@@ -343,17 +363,33 @@ app directory.
 - **`frontend`** names a built static bundle. `dist` (required) is the asset
   directory; `entry` (optional, default `index.html`) is the file served for the
   root and for any path that doesn't match a real asset (SPA fallback). It is
-  served at `/ui/{app}/` once activated.
-- **`functions`** declares sandboxed server-side functions. `entry` must name an
-  already-built `.wasm` module. `capabilities` is the **closed** set of host
-  power the sandbox grants — and the manifest only ever *declares* it; the
-  sandbox is what enforces it:
-  - `data` — per-entity operation grants (referenced by the entity's stable id),
-    each restricted to a subset of that entity's enabled operations.
-  - `network` — an **exact-match** hostname allow-list. No wildcards, no general
-    fetch.
-  - `model` — access to the model broker. The function never receives the
-    underlying provider token.
+  served at `/ui/{app}/` once activated. It must be **pre-built** — pocketknife
+  never bundles on-box; the manifest only references output that already exists,
+  relative to the app directory.
+- **`functions`** declares server-side functions, each in exactly one of two
+  closed kinds (both may carry an optional `description`, surfaced as the doc
+  comment on the generated client method):
+  - A **prompt function** (`prompt`) is a declarative LLM call: a template with
+    `{{param}}` placeholders (machineName rule, first-appearance order,
+    repeats allowed, no escaping — any other `{{` fails validation), rendered
+    server-side by verbatim substitution and sent through the model broker. A
+    prompt function must declare **exactly** `{"model": true}` — it has no code,
+    so it can hold no other power.
+  - A **wasm function** (`entry`) names an already-built `.wasm` module,
+    relative to the app directory (pocketknife never compiles functions
+    on-box). `capabilities` is the **closed** set of host power the sandbox
+    grants — and the manifest only ever *declares* it; the sandbox is what
+    enforces it:
+    - `data` — per-entity operation grants (referenced by the entity's stable id),
+      each restricted to a subset of that entity's enabled operations.
+    - `network` — an **exact-match** hostname allow-list. No wildcards, no general
+      fetch.
+    - `model` — access to the model broker. The function never receives the
+      underlying provider token.
+
+  Because functions are invoked at `/apps/{app}/functions/{name}`, `functions`
+  is a reserved entity name. Adding or changing functions on an existing app
+  requires a version bump, like any other manifest change.
 
 ## HTTP API
 
@@ -366,6 +402,24 @@ All routes are namespaced by app: `/apps/{app_id}/{entity_name}`.
 | `GET    /apps/{app}/{entity}/{id}`    | read one | `200` / `404` |
 | `PATCH  /apps/{app}/{entity}/{id}`    | partial update (only supplied fields change; `updated_at` bumped) | `200` |
 | `DELETE /apps/{app}/{entity}/{id}`    | delete | `204` |
+| `POST   /apps/{app}/functions/{name}` | invoke a declared function (see below) | `200` `{"output": ...}` |
+
+### Function invocation
+
+`POST /apps/{app}/functions/{name}` executes one declared function. For a **prompt
+function** the body is a JSON object with one string value per `{{placeholder}}` in the
+template (missing/unknown/non-string parameters are rejected with all issues at once);
+`output` is the model's text. For a **wasm function** the raw body is passed to the module
+verbatim and `output` is whatever the guest wrote (embedded as JSON if valid, as a string
+otherwise). Because the literal `functions` segment owns this path, `functions` is a
+reserved entity name.
+
+Invocation-specific error codes (same envelope): `function_not_found` (404),
+`invalid_body`/`invalid_params` (400, per-parameter details), `input_too_large` (413),
+`model_not_configured` (503, no provider configured), `model_call_failed` (502),
+`function_load_failed` (500), `function_timeout` (504), `function_crashed` (500),
+`function_failed` (422, the guest reported failure; its output is in the details),
+`functions_unavailable` (503, server started without a function runner).
 
 ### List query syntax (v1, AND-combined, no OR/nesting/joins)
 
@@ -573,31 +627,41 @@ default `app_meta` row — emoji and color seeded from the manifest's
 omitted), grid order auto-assigned — so it immediately appears in the shell
 launcher's home grid.
 
-## Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
+## Functions (`funcrun/`, `sandbox/`, `broker/`, `consent/`)
 
-A function's manifest entry only *declares* capabilities; `sandbox/` is the real
-boundary that *enforces* them. Each function body is treated as adversarial: it
-runs as a WebAssembly module under wazero with **no filesystem, no environment,
-no raw network**, behind a fixed, capability-checked host ABI (the `pocketknife`
-host module) that is the only way out. Per-invocation resource limits apply
-(linear memory, a wall-clock timeout, input/output byte caps). The three gated
-host calls (`data_call`, `network_fetch`, `model_call`) return sentinel codes; a
-denial carries no payload, so a function can't use responses as an oracle for
-capabilities it wasn't granted.
+`funcrun/` executes one declared function behind `POST
+/apps/{app}/functions/{name}`, in one of two kinds. A **prompt function** never
+runs code: its parameters are validated against the template's placeholders,
+substituted verbatim, and the rendered prompt goes through the broker. A **wasm
+function** runs in the sandbox.
 
-`broker/` is the **only** path from a function to a model provider: the provider
-token is read once from the environment, held unexported, and never reaches a
-function or the browser. `consent/` derives the union of every function's
-declared capabilities for an app — a pure function of the manifest — so the
-shell can show the full capability surface before the app is allowed to run.
+A wasm function's manifest entry only *declares* capabilities; `sandbox/` is the
+real boundary that *enforces* them. Each function body is treated as
+adversarial: it runs as a WebAssembly module under wazero with **no filesystem,
+no environment, no raw network**, behind a fixed, capability-checked host ABI
+(the `pocketknife` host module) that is the only way out. Per-invocation
+resource limits apply (linear memory, a wall-clock timeout, input/output byte
+caps). The three gated host calls (`data_call`, `network_fetch`, `model_call`)
+return sentinel codes; a denial carries no payload, so a function can't use
+responses as an oracle for capabilities it wasn't granted.
+
+`broker/` is the **only** path from a function to a model provider: the
+credential is read once from the environment at boot (see "Model provider"
+above — Anthropic Messages API, or a generic HTTP relay), held unexported, and
+never reaches a function or the browser. `consent/` derives the union of every
+function's declared capabilities for an app — a pure function of the manifest —
+so the shell can show the full capability surface before the app is allowed to
+run.
 
 ## Typed client (`client/`)
 
 `client.Generate` renders a self-contained TypeScript module (entity types + a
 typed client mirroring the CRUD/list surface, URL scheme, query syntax, JSON
-shapes and error envelope) from a validated schema model. It is a pure function
-of the `*schema.App`: an unchanged manifest produces byte-identical output, so
-regenerating is a no-op diff.
+shapes and error envelope) from a validated schema model. Declared functions
+appear as a `functions` sub-client: one method per function, with a params
+interface derived from a prompt function's `{{placeholders}}` and resolving to
+the model's text. It is a pure function of the `*schema.App`: an unchanged
+manifest produces byte-identical output, so regenerating is a no-op diff.
 
 ## Deferred (still out of scope)
 
