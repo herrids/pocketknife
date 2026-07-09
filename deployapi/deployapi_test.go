@@ -102,7 +102,7 @@ func newTestServer(t *testing.T) *testServer {
 	ts := &testServer{
 		deploy: httptest.NewServer(deployapi.NewServer(reg, bst, appsDir)),
 		assets: httptest.NewServer(assets.NewServer(reg)),
-		api:    httptest.NewServer(api.NewServer(reg)),
+		api:    httptest.NewServer(api.NewServer(reg, nil)),
 		reg:    reg,
 		bst:    bst,
 	}

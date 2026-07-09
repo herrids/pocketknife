@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 
+	"pocketknife/funcrun"
 	"pocketknife/registry"
 	"pocketknife/schema"
 	"pocketknife/store"
@@ -18,17 +19,24 @@ import (
 // Server wraps the registry and exposes an http.Handler.
 type Server struct {
 	reg *registry.Registry
+	fns *funcrun.Runner
 }
 
-// NewServer builds the generic HTTP handler over the given registry.
-func NewServer(reg *registry.Registry) http.Handler {
-	s := &Server{reg: reg}
+// NewServer builds the generic HTTP handler over the given registry. fns
+// executes declared app functions (prompt and wasm); a nil runner serves the
+// CRUD surface as before and answers every invocation with 503.
+func NewServer(reg *registry.Registry, fns *funcrun.Runner) http.Handler {
+	s := &Server{reg: reg, fns: fns}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /apps/{app}/{entity}", s.handleCreate)
 	mux.HandleFunc("GET /apps/{app}/{entity}", s.handleList)
 	mux.HandleFunc("GET /apps/{app}/{entity}/{id}", s.handleRead)
 	mux.HandleFunc("PATCH /apps/{app}/{entity}/{id}", s.handleUpdate)
 	mux.HandleFunc("DELETE /apps/{app}/{entity}/{id}", s.handleDelete)
+	// The literal "functions" segment outranks the {entity} wildcard, and the
+	// validator reserves "functions" as an entity name so no manifest can
+	// shadow this route.
+	mux.HandleFunc("POST /apps/{app}/functions/{name}", s.handleInvoke)
 	return mux
 }
 

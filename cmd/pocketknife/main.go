@@ -22,12 +22,15 @@ import (
 
 	"pocketknife/api"
 	"pocketknife/assets"
+	"pocketknife/broker"
 	"pocketknife/build"
 	"pocketknife/cors"
 	"pocketknife/deployapi"
+	"pocketknife/funcrun"
 	"pocketknife/migrate"
 	"pocketknife/platform"
 	"pocketknife/registry"
+	"pocketknife/sandbox"
 	"pocketknife/shellserve"
 	"pocketknife/validateapi"
 )
@@ -143,8 +146,15 @@ func runServe(args []string) {
 		log.Fatalf("init platform server: %v", err)
 	}
 
+	sb, err := sandbox.New(sandbox.Options{})
+	if err != nil {
+		log.Fatalf("init sandbox: %v", err)
+	}
+	defer sb.Close(context.Background())
+	runner := funcrun.New(sb, brokerFromEnv())
+
 	mux := http.NewServeMux()
-	mux.Handle("/apps/", api.NewServer(reg))
+	mux.Handle("/apps/", api.NewServer(reg, runner))
 	mux.Handle("/builds/", build.NewStatusServer(bst, reg))
 	mux.Handle("/ui/", assets.NewServer(reg))
 	mux.Handle("/validate", validateapi.NewServer())
@@ -159,6 +169,33 @@ func runServe(args []string) {
 	if err := http.ListenAndServe(*addr, handler); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// brokerFromEnv selects the model provider from the environment, once, at
+// boot. The credential is read here and nowhere else; it lives unexported
+// inside the broker and never reaches a function, a manifest or the browser.
+//
+//  1. ANTHROPIC_API_KEY          → the Anthropic Messages API
+//     (POCKETKNIFE_MODEL optionally overrides broker.DefaultAnthropicModel)
+//  2. POCKETKNIFE_MODEL_ENDPOINT → the generic {"prompt"}→{"text"} HTTP caller
+//     (bearer token from POCKETKNIFE_MODEL_TOKEN)
+//  3. neither                    → an unconfigured broker; every model call
+//     answers 503 model_not_configured
+func brokerFromEnv() *broker.Broker {
+	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
+		model := os.Getenv("POCKETKNIFE_MODEL")
+		if model == "" {
+			model = broker.DefaultAnthropicModel
+		}
+		log.Printf("model broker: Anthropic (%s)", model)
+		return broker.New(broker.NewAnthropicCaller(key, model))
+	}
+	if endpoint := os.Getenv("POCKETKNIFE_MODEL_ENDPOINT"); endpoint != "" {
+		log.Printf("model broker: generic HTTP endpoint %s", endpoint)
+		return broker.New(broker.NewHTTPCaller(endpoint, os.Getenv("POCKETKNIFE_MODEL_TOKEN")))
+	}
+	log.Printf("model broker: not configured (set ANTHROPIC_API_KEY to enable prompt functions)")
+	return broker.New(nil)
 }
 
 // runMigrate drives the apply-changeset flow for one app. The app's current

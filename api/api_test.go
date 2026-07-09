@@ -33,7 +33,7 @@ func bootFromExamples(t *testing.T) (*registry.Registry, *httptest.Server, strin
 			t.Fatalf("example app %s failed to load: errors=%v err=%v", r.ManifestPath, r.Errors, r.Err)
 		}
 	}
-	srv := httptest.NewServer(api.NewServer(reg))
+	srv := httptest.NewServer(api.NewServer(reg, nil))
 	t.Cleanup(func() {
 		srv.Close()
 		reg.Close()

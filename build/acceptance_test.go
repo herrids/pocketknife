@@ -120,7 +120,7 @@ func TestGateTasksInstallActivatesAndServesRealFrontend(t *testing.T) {
 		t.Fatalf("job state = %s, want ready", res.Job.State)
 	}
 
-	apiSrv := httptest.NewServer(api.NewServer(reg))
+	apiSrv := httptest.NewServer(api.NewServer(reg, nil))
 	t.Cleanup(apiSrv.Close)
 	assetsSrv := httptest.NewServer(assets.NewServer(reg))
 	t.Cleanup(assetsSrv.Close)
@@ -154,7 +154,7 @@ func TestGateReadingTrackerInstallActivatesAndServesRealFrontend(t *testing.T) {
 		t.Fatalf("job state = %s, want ready", res.Job.State)
 	}
 
-	apiSrv := httptest.NewServer(api.NewServer(reg))
+	apiSrv := httptest.NewServer(api.NewServer(reg, nil))
 	t.Cleanup(apiSrv.Close)
 	assetsSrv := httptest.NewServer(assets.NewServer(reg))
 	t.Cleanup(assetsSrv.Close)
@@ -185,7 +185,7 @@ func TestGateGratitudeLogInstallActivatesAndServesRealFrontend(t *testing.T) {
 		t.Fatalf("job state = %s, want ready", res.Job.State)
 	}
 
-	apiSrv := httptest.NewServer(api.NewServer(reg))
+	apiSrv := httptest.NewServer(api.NewServer(reg, nil))
 	t.Cleanup(apiSrv.Close)
 	assetsSrv := httptest.NewServer(assets.NewServer(reg))
 	t.Cleanup(assetsSrv.Close)
@@ -281,7 +281,7 @@ func TestGateReadingTrackerSecondDeployRollsBackThenSucceeds(t *testing.T) {
 	ra1, _ := reg.App("reading_tracker")
 	oldAssetDir := ra1.AssetDir
 
-	apiSrv := httptest.NewServer(api.NewServer(reg))
+	apiSrv := httptest.NewServer(api.NewServer(reg, nil))
 	t.Cleanup(apiSrv.Close)
 	assetsSrv := httptest.NewServer(assets.NewServer(reg))
 	t.Cleanup(assetsSrv.Close)
@@ -360,7 +360,7 @@ func TestGateTasksRebootMidBuildReconciles(t *testing.T) {
 	ra, _ := reg.App("tasks")
 	wantAssetDir := ra.AssetDir
 
-	apiSrv := httptest.NewServer(api.NewServer(reg))
+	apiSrv := httptest.NewServer(api.NewServer(reg, nil))
 	t.Cleanup(apiSrv.Close)
 	created := httpJSON(t, "POST", apiSrv.URL+"/apps/tasks/project", map[string]any{"name": "Gate"}, http.StatusCreated)
 	projID := created["id"].(string)
@@ -409,7 +409,7 @@ func TestGateTasksRebootMidBuildReconciles(t *testing.T) {
 	}
 
 	// The app must be fully usable again, with its pre-reboot data intact.
-	rebootedAPISrv := httptest.NewServer(api.NewServer(rebooted))
+	rebootedAPISrv := httptest.NewServer(api.NewServer(rebooted, nil))
 	t.Cleanup(rebootedAPISrv.Close)
 	rebootedAssetsSrv := httptest.NewServer(assets.NewServer(rebooted))
 	t.Cleanup(rebootedAssetsSrv.Close)
