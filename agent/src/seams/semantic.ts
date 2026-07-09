@@ -5,7 +5,14 @@
 // integrity, and defaults that satisfy the field's own constraints.
 
 import type { AppManifest, Entity, Field } from "./manifest-types.js";
-import { RESERVED_NAMES, entityById, fieldHasDefault } from "./manifest-types.js";
+import {
+  RESERVED_ENTITY_NAMES,
+  RESERVED_NAMES,
+  entityById,
+  fieldHasDefault,
+  isPromptFunction,
+  scanPrompt,
+} from "./manifest-types.js";
 import type { ValidationError } from "./validator.js";
 
 export function semanticErrors(manifest: AppManifest): ValidationError[] {
@@ -26,6 +33,15 @@ export function semanticErrors(manifest: AppManifest): ValidationError[] {
       errors.push({ path: `${epath}/name`, message: `entity name "${entity.name}" is not unique` });
     }
     entityNames.add(entity.name);
+
+    // An entity name becomes a URL segment under /apps/{app}/, so it must
+    // not shadow a platform route (e.g. the function-invoke sub-path).
+    if (RESERVED_ENTITY_NAMES.includes(entity.name)) {
+      errors.push({ path: `${epath}/name`, message: `entity name "${entity.name}" is reserved by the platform` });
+    }
+    if (RESERVED_ENTITY_NAMES.includes(entity.id)) {
+      errors.push({ path: `${epath}/id`, message: `entity id "${entity.id}" is reserved by the platform` });
+    }
 
     const fieldIds = new Set<string>();
     const fieldNames = new Set<string>();
@@ -76,14 +92,31 @@ export function semanticErrors(manifest: AppManifest): ValidationError[] {
     }
     fnNames.add(fn.name);
 
-    (fn.capabilities.data ?? []).forEach((scope, di) => {
-      if (entityById(manifest, scope.entity) === undefined) {
+    if (isPromptFunction(fn)) {
+      // Mirrors validate/semantic.go: every "{{" must begin a well-formed
+      // placeholder — there is no escaping mechanism.
+      for (const off of scanPrompt(fn.prompt).malformed) {
         errors.push({
-          path: `${fpath}/capabilities/data/${di}/entity`,
-          message: `data scope entity "${scope.entity}" does not resolve to an entity in this manifest`,
+          path: `${fpath}/prompt`,
+          message: `prompt of function "${fn.name}" contains a '{{' at byte ${off} that does not form a valid {{placeholder}} (there is no escaping)`,
         });
       }
-    });
+    } else {
+      if (fn.entry.startsWith("/") || fn.entry === ".." || /(^|\/)\.\.(\/|$)/.test(fn.entry)) {
+        errors.push({
+          path: `${fpath}/entry`,
+          message: `function "${fn.name}" entry "${fn.entry}" must be a clean relative path inside the app directory`,
+        });
+      }
+      (fn.capabilities.data ?? []).forEach((scope, di) => {
+        if (entityById(manifest, scope.entity) === undefined) {
+          errors.push({
+            path: `${fpath}/capabilities/data/${di}/entity`,
+            message: `data scope entity "${scope.entity}" does not resolve to an entity in this manifest`,
+          });
+        }
+      });
+    }
   });
 
   return errors;

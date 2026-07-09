@@ -6,8 +6,8 @@
 // each entity's enabled operations. The builder authors its frontend against
 // this surface, never against raw fetch calls.
 
-import type { AppManifest, Entity, Field } from "./manifest-types.js";
-import { entityAllows, fieldHasDefault } from "./manifest-types.js";
+import type { AppManifest, Entity, Field, FunctionDecl } from "./manifest-types.js";
+import { entityAllows, fieldHasDefault, isPromptFunction, promptParams } from "./manifest-types.js";
 
 const PREAMBLE = `export type ISODateTime = string;
 
@@ -103,6 +103,10 @@ export function generateClient(manifest: AppManifest): string {
 
   for (const entity of manifest.entities) {
     parts.push(writeEntity(manifest, entity));
+  }
+
+  if ((manifest.functions ?? []).length > 0) {
+    parts.push(writeFunctions(manifest));
   }
 
   parts.push(writeRootClient(manifest));
@@ -239,6 +243,58 @@ function writeEntityClient(manifest: AppManifest, entity: Entity, typeName: stri
   return b.join("");
 }
 
+// writeFunctions mirrors client/generate.go's writeFunctions: one params
+// interface per parameterised prompt function, plus a functions sub-client
+// with one method per declared function, in manifest order.
+function writeFunctions(manifest: AppManifest): string {
+  const functions = manifest.functions ?? [];
+  const b: string[] = [];
+  b.push("// --- functions ---\n\n");
+
+  for (const fn of functions) {
+    const params = promptParams(fn);
+    if (!isPromptFunction(fn) || params.length === 0) continue;
+    b.push(`export interface ${functionParamsName(fn)} {\n`);
+    for (const p of params) {
+      b.push(`  ${p}: string;\n`);
+    }
+    b.push("}\n\n");
+  }
+
+  b.push(`export class ${pascalCase(manifest.app.id)}FunctionsClient {\n`);
+  b.push("  constructor(private readonly baseUrl: string, private readonly fetchImpl: typeof fetch) {}\n\n");
+  for (const fn of functions) {
+    if (fn.description) {
+      b.push(`  /** ${fn.description} */\n`);
+    }
+    const path = `/apps/${manifest.app.id}/functions/${fn.name}`;
+    if (isPromptFunction(fn) && promptParams(fn).length > 0) {
+      b.push(`  async ${fn.name}(params: ${functionParamsName(fn)}): Promise<string> {\n`);
+      b.push(
+        `    const res = await request<{ output: string }>(this.baseUrl, this.fetchImpl, "POST", ${JSON.stringify(path)}, params);\n`,
+      );
+    } else if (isPromptFunction(fn)) {
+      b.push(`  async ${fn.name}(): Promise<string> {\n`);
+      b.push(
+        `    const res = await request<{ output: string }>(this.baseUrl, this.fetchImpl, "POST", ${JSON.stringify(path)}, {});\n`,
+      );
+    } else {
+      b.push(`  async ${fn.name}(input: unknown): Promise<unknown> {\n`);
+      b.push(
+        `    const res = await request<{ output: unknown }>(this.baseUrl, this.fetchImpl, "POST", ${JSON.stringify(path)}, input);\n`,
+      );
+    }
+    b.push("    return res.output;\n");
+    b.push("  }\n\n");
+  }
+  b.push("}\n\n");
+  return b.join("");
+}
+
+function functionParamsName(fn: FunctionDecl): string {
+  return `${pascalCase(fn.name)}Params`;
+}
+
 function writeRootClient(manifest: AppManifest): string {
   const className = `${pascalCase(manifest.app.id)}Client`;
   const b: string[] = [];
@@ -246,11 +302,17 @@ function writeRootClient(manifest: AppManifest): string {
   for (const entity of manifest.entities) {
     b.push(`  readonly ${entity.name}: ${pascalCase(entity.name)}Client;\n`);
   }
+  if ((manifest.functions ?? []).length > 0) {
+    b.push(`  readonly functions: ${pascalCase(manifest.app.id)}FunctionsClient;\n`);
+  }
   b.push("\n  constructor(options: ClientOptions = {}) {\n");
   b.push("    const baseUrl = options.baseUrl ?? \"\";\n");
   b.push("    const fetchImpl = options.fetch ?? fetch;\n");
   for (const entity of manifest.entities) {
     b.push(`    this.${entity.name} = new ${pascalCase(entity.name)}Client(baseUrl, fetchImpl);\n`);
+  }
+  if ((manifest.functions ?? []).length > 0) {
+    b.push(`    this.functions = new ${pascalCase(manifest.app.id)}FunctionsClient(baseUrl, fetchImpl);\n`);
   }
   b.push("  }\n");
   b.push("}\n");

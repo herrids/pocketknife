@@ -103,11 +103,26 @@ export type Field =
   | EnumField
   | ReferenceField;
 
-export interface FunctionDecl {
+export interface WasmFunctionDecl {
   id: StableId;
   name: string;
   entry: string;
+  description?: string;
   capabilities: Capabilities;
+}
+
+export interface PromptFunctionDecl {
+  id: StableId;
+  name: string;
+  prompt: string;
+  description?: string;
+  capabilities: { model: true };
+}
+
+export type FunctionDecl = WasmFunctionDecl | PromptFunctionDecl;
+
+export function isPromptFunction(fn: FunctionDecl): fn is PromptFunctionDecl {
+  return "prompt" in fn && typeof fn.prompt === "string" && fn.prompt !== "";
 }
 
 export interface Capabilities {
@@ -122,6 +137,41 @@ export interface DataScope {
 }
 
 export const RESERVED_NAMES = ["id", "created_at", "updated_at"];
+
+// Entity names claimed by the platform's own routes: "functions" is the
+// function-invocation sub-path under /apps/{app}/. Mirrors
+// schema.ReservedEntityNames in the Go backend.
+export const RESERVED_ENTITY_NAMES = ["functions"];
+
+// Mirrors schema/prompt.go: one well-formed {{param}} placeholder. Param
+// names follow the machineName rule; there is no escaping mechanism.
+const PLACEHOLDER_PATTERN = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+
+// scanPrompt returns the template's well-formed placeholder names
+// (first-appearance order, deduplicated) and the byte offset of every "{{"
+// that does not begin a well-formed placeholder.
+export function scanPrompt(prompt: string): { params: string[]; malformed: number[] } {
+  const params: string[] = [];
+  const starts = new Set<number>();
+  for (const m of prompt.matchAll(PLACEHOLDER_PATTERN)) {
+    starts.add(m.index);
+    if (!params.includes(m[1])) params.push(m[1]);
+  }
+  const malformed: number[] = [];
+  for (let i = 0; i + 1 < prompt.length; i++) {
+    if (prompt[i] !== "{" || prompt[i + 1] !== "{") continue;
+    if (starts.has(i)) continue;
+    malformed.push(i);
+    i++; // consume both braces so "{{{" reports once
+  }
+  return { params, malformed };
+}
+
+// promptParams returns the placeholder names of a prompt function's template.
+export function promptParams(fn: FunctionDecl): string[] {
+  if (!isPromptFunction(fn)) return [];
+  return scanPrompt(fn.prompt).params;
+}
 
 const ALL_OPERATIONS: Operation[] = ["create", "read", "update", "delete"];
 

@@ -48,6 +48,32 @@ The client throws **`ApiError`** (with `.message`, `.code`, `.status`) on any no
 response. Catch it at every call site a user can trigger and surface `.message` as a
 toast — never let it fail silently or crash the view.
 
+## Calling the app's AI functions
+
+If the manifest declares `functions`, the client exposes them at
+`client.functions.<name>(...)` — a typed method per function. Prompt functions take an
+object of **string** params (one per `{{placeholder}}` in the template; the generated
+`<Name>Params` interface tells you exactly which) and resolve to the model's text:
+
+```ts
+const summary = await client.functions.summarize({ tone: "cheerful", text: note.text });
+```
+
+Design rules for AI features:
+
+- The function can't read the database — fetch the rows you need through the entity
+  sub-clients and pass their content in as params.
+- **Model calls take seconds, not milliseconds.** Always show a real in-progress state
+  on the triggering control (spinner + disabled button, or a skeleton where the result
+  will appear); never freeze the UI waiting.
+- Handle failure gracefully: an `ApiError` with `.status === 503`
+  (`model_not_configured`) means the server has no model provider — surface a calm
+  "AI features aren't configured on this server" message, and keep the rest of the app
+  fully usable. Other errors get the usual toast.
+- The result is plain text. Render it as content (with sensible whitespace handling),
+  and give the user an explicit action to keep/apply it — don't silently overwrite
+  their data with model output.
+
 ## What "polished" means here (the quality bar)
 
 This is the part the old version of this skill got wrong. Aim high:

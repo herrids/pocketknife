@@ -17,17 +17,19 @@ an app into this document.
   "app": { "id": "reading_tracker", "name": "Reading Tracker", "emoji": "📚", "version": 1 },
   "entities": [ /* one or more entity objects */ ],
   "frontend": { "dist": "frontend/dist", "entry": "index.html" },
-  "functions": [ /* optional, sandboxed server-side functions — rarely needed for a new app */ ]
+  "functions": [ /* optional — prompt functions give the app AI behaviour, see below */ ]
 }
 ```
 
 - `app.id`, `app.name`, `app.version` are required. `version` starts at `1`. `emoji` is
   optional, cosmetic.
 - `entities` must have at least one entry.
-- `frontend` and `functions` are populated later by the platform / the builder stage —
-  as the planner, you normally emit a manifest **without** them. Don't invent a
-  `frontend` or `functions` block unless the user explicitly asks for a sandboxed
-  function.
+- `frontend` is populated later by the platform / the builder stage — as the planner,
+  you emit a manifest **without** it.
+- `functions` is yours to author **when the user wants AI behaviour** (summarize,
+  rewrite, classify, suggest, draft…). Emit a *prompt function* for each such feature —
+  see "Prompt functions" below. Never emit a wasm function (one with an `entry` key);
+  those require a pre-compiled module you cannot produce.
 
 ## Stable IDs vs. names — the rule you must not break
 
@@ -79,6 +81,47 @@ error if you get one:
 - `operations` on an entity (optional, default: all four) is a subset of
   `["create", "read", "update", "delete"]` — use it to make an entity append-only
   (`["create", "read"]`) or read-only, etc.
+
+## Prompt functions — giving an app AI behaviour
+
+A **prompt function** is a declarative LLM call: a prompt template the server renders
+and sends to the platform's model broker. No code, no API key in the app — the frontend
+calls it through the generated client and gets text back. Whenever the user asks for an
+AI-flavoured feature ("summarize my notes", "suggest a reply", "categorize this"),
+model it as one prompt function per feature.
+
+```json
+{
+  "id": "fn_summarize",
+  "name": "summarize",
+  "prompt": "Summarize the following note in a {{tone}} tone. Reply with only the summary.\n\nNote:\n{{text}}",
+  "description": "Summarizes a note.",
+  "capabilities": { "model": true }
+}
+```
+
+The contract, all enforced by `validate_manifest`:
+
+- `id` (convention `fn_<name>`), `name` (machineName, unique among functions), `prompt`
+  and `capabilities` are required. `description` is optional and becomes the doc comment
+  on the generated client method — write one.
+- `capabilities` must be **exactly** `{ "model": true }`. A prompt function can hold no
+  other power — no `data` scopes, no `network` domains, no `entry`.
+- `{{param}}` placeholders (machineName rule: `^[a-z][a-z0-9_]*$`) become the required
+  string parameters of the generated client method, in order of first appearance. A
+  repeated placeholder is fine; a template with no placeholders is fine (a static
+  prompt). Any other `{{` in the prompt is a validation error — there is no escaping.
+- The function's inputs are strings the **frontend** passes in (e.g. the note text the
+  user selected). The function cannot read the database itself — design the frontend to
+  fetch the rows it needs via the entity client and interpolate them into the call.
+- Write the prompt like a good instruction: say what to produce, constrain the output
+  shape ("Reply with only the summary."), and put user-supplied content after the
+  instruction, clearly delimited.
+
+**Adding a function to an existing app requires a version bump.** A redeploy that keeps
+`app.version` unchanged never re-reads the manifest, so the new function would be
+ignored. When you add or change functions in update mode, increment `app.version` like
+any other schema change.
 
 ## Validation is mandatory — never assert validity yourself
 
@@ -168,6 +211,34 @@ with it yourself beyond knowing the manifest is now final.
 }
 ```
 
-These three shapes — single tracker, append-only log, two entities joined by a
-reference — cover almost every app a user will describe. Reach for the closest one and
-adapt field names and types to what they actually asked for.
+### 4. A tracker with an AI feature (prompt function)
+
+```json
+{
+  "app": { "id": "journal", "name": "Journal", "emoji": "📓", "version": 1 },
+  "entities": [
+    {
+      "id": "ent_entry",
+      "name": "entry",
+      "fields": [
+        { "id": "fld_text",     "name": "text",     "type": "text", "required": true },
+        { "id": "fld_mood",     "name": "mood",     "type": "enum", "values": ["low", "ok", "great"] }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "id": "fn_reflect",
+      "name": "reflect",
+      "prompt": "Read this journal entry and reply with one short, kind reflection question about it. Reply with only the question.\n\nEntry:\n{{text}}",
+      "description": "Suggests a reflection question for a journal entry.",
+      "capabilities": { "model": true }
+    }
+  ]
+}
+```
+
+These four shapes — single tracker, append-only log, two entities joined by a
+reference, and a tracker with an AI feature — cover almost every app a user will
+describe. Reach for the closest one and adapt field names and types to what they
+actually asked for.

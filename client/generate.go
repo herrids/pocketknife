@@ -32,6 +32,10 @@ func Generate(app *schema.App) []byte {
 		writeEntity(&b, app, ent)
 	}
 
+	if len(app.Functions) > 0 {
+		writeFunctions(&b, app)
+	}
+
 	writeRootClient(&b, app)
 
 	return []byte(b.String())
@@ -271,17 +275,71 @@ func writeEntityClient(b *strings.Builder, app *schema.App, ent *schema.Entity, 
 	b.WriteString("}\n\n")
 }
 
+// writeFunctions renders one params interface per parameterised prompt
+// function and a single functions sub-client with one method per declared
+// function, in manifest order. A prompt function resolves to the model's
+// text; a wasm function's output is whatever JSON (or string) the module
+// wrote, so it stays unknown.
+func writeFunctions(b *strings.Builder, app *schema.App) {
+	b.WriteString("// --- functions ---\n\n")
+
+	for _, fn := range app.Functions {
+		params := fn.PromptParams()
+		if !fn.IsPrompt() || len(params) == 0 {
+			continue
+		}
+		fmt.Fprintf(b, "export interface %s {\n", functionParamsName(fn))
+		for _, p := range params {
+			fmt.Fprintf(b, "  %s: string;\n", p)
+		}
+		b.WriteString("}\n\n")
+	}
+
+	fmt.Fprintf(b, "export class %sFunctionsClient {\n", pascalCase(app.ID))
+	b.WriteString("  constructor(private readonly baseUrl: string, private readonly fetchImpl: typeof fetch) {}\n\n")
+	for _, fn := range app.Functions {
+		if fn.Description != "" {
+			fmt.Fprintf(b, "  /** %s */\n", fn.Description)
+		}
+		path := fmt.Sprintf("/apps/%s/functions/%s", app.ID, fn.Name)
+		switch {
+		case fn.IsPrompt() && len(fn.PromptParams()) > 0:
+			fmt.Fprintf(b, "  async %s(params: %s): Promise<string> {\n", fn.Name, functionParamsName(fn))
+			fmt.Fprintf(b, "    const res = await request<{ output: string }>(this.baseUrl, this.fetchImpl, \"POST\", %q, params);\n", path)
+		case fn.IsPrompt():
+			fmt.Fprintf(b, "  async %s(): Promise<string> {\n", fn.Name)
+			fmt.Fprintf(b, "    const res = await request<{ output: string }>(this.baseUrl, this.fetchImpl, \"POST\", %q, {});\n", path)
+		default:
+			fmt.Fprintf(b, "  async %s(input: unknown): Promise<unknown> {\n", fn.Name)
+			fmt.Fprintf(b, "    const res = await request<{ output: unknown }>(this.baseUrl, this.fetchImpl, \"POST\", %q, input);\n", path)
+		}
+		b.WriteString("    return res.output;\n")
+		b.WriteString("  }\n\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+func functionParamsName(fn *schema.Function) string {
+	return pascalCase(fn.Name) + "Params"
+}
+
 func writeRootClient(b *strings.Builder, app *schema.App) {
 	className := pascalCase(app.ID) + "Client"
 	fmt.Fprintf(b, "export class %s {\n", className)
 	for _, ent := range app.Entities {
 		fmt.Fprintf(b, "  readonly %s: %sClient;\n", ent.Name, pascalCase(ent.Name))
 	}
+	if len(app.Functions) > 0 {
+		fmt.Fprintf(b, "  readonly functions: %sFunctionsClient;\n", pascalCase(app.ID))
+	}
 	b.WriteString("\n  constructor(options: ClientOptions = {}) {\n")
 	b.WriteString("    const baseUrl = options.baseUrl ?? \"\";\n")
 	b.WriteString("    const fetchImpl = options.fetch ?? fetch;\n")
 	for _, ent := range app.Entities {
 		fmt.Fprintf(b, "    this.%s = new %sClient(baseUrl, fetchImpl);\n", ent.Name, pascalCase(ent.Name))
+	}
+	if len(app.Functions) > 0 {
+		fmt.Fprintf(b, "    this.functions = new %sFunctionsClient(baseUrl, fetchImpl);\n", pascalCase(app.ID))
 	}
 	b.WriteString("  }\n")
 	b.WriteString("}\n")
