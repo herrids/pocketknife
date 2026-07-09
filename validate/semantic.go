@@ -2,6 +2,8 @@ package validate
 
 import (
 	"fmt"
+	"path"
+	"strings"
 
 	"pocketknife/schema"
 )
@@ -27,6 +29,16 @@ func semantic(app *schema.App) Errors {
 			errs = append(errs, Error{epath + "/name", "duplicate_name", fmt.Sprintf("entity name %q is not unique", ent.Name)})
 		}
 		entityNames[ent.Name] = true
+
+		// An entity name becomes a URL segment under /apps/{app}/, so it must
+		// not shadow a platform route. The id is checked too: a later rename
+		// onto the id would otherwise smuggle the collision in.
+		if isReservedEntity(ent.Name) {
+			errs = append(errs, Error{epath + "/name", "reserved_name", fmt.Sprintf("entity name %q is reserved by the platform", ent.Name)})
+		}
+		if isReservedEntity(ent.ID) {
+			errs = append(errs, Error{epath + "/id", "reserved_id", fmt.Sprintf("entity id %q is reserved by the platform", ent.ID)})
+		}
 
 		fieldIDs := map[string]bool{}
 		fieldNames := map[string]bool{}
@@ -72,6 +84,19 @@ func semantic(app *schema.App) Errors {
 			errs = append(errs, Error{fpath + "/name", "duplicate_name", fmt.Sprintf("function name %q is not unique", fn.Name)})
 		}
 		fnNames[fn.Name] = true
+
+		if fn.IsPrompt() {
+			_, malformed := schema.ScanPrompt(fn.Prompt)
+			for _, off := range malformed {
+				errs = append(errs, Error{fpath + "/prompt", "malformed_placeholder", fmt.Sprintf("prompt of function %q contains a '{{' at byte %d that does not form a valid {{placeholder}} (there is no escaping)", fn.Name, off)})
+			}
+		} else {
+			// The entry is joined onto the app directory and read at invoke
+			// time, so it must stay inside the app directory.
+			if path.IsAbs(fn.Entry) || fn.Entry != path.Clean(fn.Entry) || fn.Entry == ".." || strings.HasPrefix(fn.Entry, "../") {
+				errs = append(errs, Error{fpath + "/entry", "bad_entry", fmt.Sprintf("function %q entry %q must be a clean relative path inside the app directory", fn.Name, fn.Entry)})
+			}
+		}
 
 		errs = append(errs, validateCapabilities(fpath+"/capabilities", app, fn)...)
 	}
@@ -119,6 +144,15 @@ func validateCapabilities(path string, app *schema.App, fn *schema.Function) Err
 
 func isReserved(name string) bool {
 	for _, r := range schema.ReservedNames {
+		if name == r {
+			return true
+		}
+	}
+	return false
+}
+
+func isReservedEntity(name string) bool {
+	for _, r := range schema.ReservedEntityNames {
 		if name == r {
 			return true
 		}

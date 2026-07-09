@@ -41,6 +41,8 @@ type rawFunction struct {
 	ID           string          `json:"id"`
 	Name         string          `json:"name"`
 	Entry        string          `json:"entry"`
+	Prompt       string          `json:"prompt"`
+	Description  string          `json:"description"`
 	Capabilities rawCapabilities `json:"capabilities"`
 }
 
@@ -141,9 +143,11 @@ func Parse(data []byte) (*App, error) {
 
 	for _, rf := range raw.Functions {
 		fn := &Function{
-			ID:    rf.ID,
-			Name:  rf.Name,
-			Entry: rf.Entry,
+			ID:          rf.ID,
+			Name:        rf.Name,
+			Entry:       rf.Entry,
+			Prompt:      rf.Prompt,
+			Description: rf.Description,
 			Capabilities: &Capabilities{
 				Network: rf.Capabilities.Network,
 				Model:   rf.Capabilities.Model,

@@ -46,6 +46,11 @@ const (
 // declare a field with one of these names.
 var ReservedNames = []string{"id", "created_at", "updated_at"}
 
+// ReservedEntityNames are entity names claimed by the platform's own routes.
+// "functions" is the function-invocation sub-path under /apps/{app}/, so an
+// entity by that name would shadow it.
+var ReservedEntityNames = []string{"functions"}
+
 // App is the root of the schema model.
 type App struct {
 	ID       string
@@ -74,17 +79,37 @@ type Frontend struct {
 	Entry string
 }
 
-// Function is one declared sandboxed server-side function: a pre-compiled
-// WebAssembly module plus the capabilities the sandbox grants it. Pocketknife
-// never compiles functions on-box — Entry must already name a built .wasm
-// module, relative to the app's directory, mirroring how Frontend.Dist must
-// already be a built static bundle. The manifest only ever declares
-// capabilities; the sandbox is what actually enforces them.
+// Function is one declared server-side function, in one of two closed kinds
+// (the structural validator guarantees exactly one is set):
+//
+//   - wasm: Entry names a pre-compiled WebAssembly module, relative to the
+//     app's directory. Pocketknife never compiles functions on-box, mirroring
+//     how Frontend.Dist must already be a built static bundle.
+//   - prompt: Prompt is a declarative LLM prompt template with {{param}}
+//     placeholders, rendered server-side and sent through the model broker.
+//     A prompt function must declare exactly the model capability — it has no
+//     code, so it can hold no other power.
+//
+// The manifest only ever declares capabilities; the sandbox (for wasm) and
+// the broker seam (for prompt) are what actually enforce them.
 type Function struct {
-	ID           string
-	Name         string
-	Entry        string
+	ID   string
+	Name string
+	// Entry is the built .wasm module path for a wasm function; empty for a
+	// prompt function.
+	Entry string
+	// Prompt is the LLM prompt template for a prompt function; empty for a
+	// wasm function.
+	Prompt string
+	// Description is an optional human-readable summary, surfaced as doc
+	// comments on the generated typed client.
+	Description  string
 	Capabilities *Capabilities
+}
+
+// IsPrompt reports whether this is a prompt function (as opposed to wasm).
+func (f *Function) IsPrompt() bool {
+	return f.Prompt != ""
 }
 
 // Capabilities is the closed set of host interfaces a function may use. There

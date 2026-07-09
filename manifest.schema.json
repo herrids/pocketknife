@@ -42,13 +42,42 @@
     },
     "function": {
       "type": "object",
+      "required": ["id", "name", "capabilities"],
+      "oneOf": [
+        { "$ref": "#/$defs/function_wasm" },
+        { "$ref": "#/$defs/function_prompt" }
+      ]
+    },
+    "function_wasm": {
+      "type": "object",
       "additionalProperties": false,
       "required": ["id", "name", "entry", "capabilities"],
       "properties": {
         "id": { "$ref": "#/$defs/stableId" },
         "name": { "$ref": "#/$defs/machineName" },
         "entry": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
         "capabilities": { "$ref": "#/$defs/capabilities" }
+      }
+    },
+    "function_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "prompt", "capabilities"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "name": { "$ref": "#/$defs/machineName" },
+        "prompt": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "capabilities": { "$ref": "#/$defs/promptCapabilities" }
+      }
+    },
+    "promptCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model"],
+      "properties": {
+        "model": { "const": true }
       }
     },
     "capabilities": {
