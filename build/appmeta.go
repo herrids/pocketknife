@@ -24,3 +24,20 @@ func pickDefaultColor(appID string) string {
 	_, _ = h.Write([]byte(appID))
 	return defaultTileColors[h.Sum32()%uint32(len(defaultTileColors))]
 }
+
+// defaultTileEmojis gives an app that never sets an explicit "emoji" in its
+// manifest a distinct, stable tile emoji instead of one shared 📦 for every
+// app. 📦 is deliberately excluded so it remains a safe sentinel for "never
+// assigned a default" in existing app_meta rows.
+var defaultTileEmojis = []string{
+	"🧭", "🎯", "🔷", "🌟", "🧩", "🪁", "🔶",
+}
+
+// pickDefaultEmoji deterministically maps an app id to one of
+// defaultTileEmojis, so the same app always gets the same default emoji
+// across boots.
+func pickDefaultEmoji(appID string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(appID))
+	return defaultTileEmojis[h.Sum32()%uint32(len(defaultTileEmojis))]
+}

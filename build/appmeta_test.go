@@ -34,8 +34,8 @@ func TestEnsureAppMetaAssignsPaletteColorWhenManifestLeavesItBlank(t *testing.T)
 	if meta.Color == "#E0E0E0" {
 		t.Fatal("expected a palette color, got the old flat gray default")
 	}
-	if meta.Emoji != "📦" {
-		t.Fatalf("emoji = %q, want generic default 📦", meta.Emoji)
+	if meta.Emoji == "📦" {
+		t.Fatal("expected a palette emoji, got the old shared default")
 	}
 }
 

@@ -43,8 +43,8 @@ func TestEnsureAppMeta_Defaults(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected row, got nil")
 	}
-	if m.Emoji != "📦" {
-		t.Errorf("emoji = %q, want 📦", m.Emoji)
+	if m.Emoji == "📦" {
+		t.Errorf("emoji = %q, expected a palette emoji instead of the old shared default", m.Emoji)
 	}
 	if m.DisplayName != "My App" {
 		t.Errorf("displayName = %q, want 'My App'", m.DisplayName)

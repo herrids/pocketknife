@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { api, type RegistryEntry } from "./api";
 
-const ACTIVE_STATES = new Set(["queued", "building", "activating"]);
-
 export function useRegistry() {
   const [entries, setEntries] = useState<RegistryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,14 +22,13 @@ export function useRegistry() {
     load();
   }, [load]);
 
-  // Poll every 3 s while any app is in an active build state.
+  // Poll every 3 s so a build that starts after mount (e.g. the agent is
+  // still planning when the shell navigates back to Home) is picked up
+  // without requiring an app to already be in an active state at mount time.
   useEffect(() => {
-    const hasActive = entries.some((e) => ACTIVE_STATES.has(e.buildState));
-    if (!hasActive) return;
-
     const id = setInterval(load, 3000);
     return () => clearInterval(id);
-  }, [entries, load]);
+  }, [load]);
 
   return { entries, loading, error, reload: load };
 }

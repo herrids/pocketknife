@@ -387,13 +387,12 @@ func (s *Store) UpsertAppMeta(m AppMeta) error {
 }
 
 // EnsureAppMeta inserts a default app_meta row if one does not already exist,
-// seeded from the manifest's own emoji/color (falling back to a generic
-// default for emoji, and a deterministic palette pick for color, for
-// whichever one the manifest left blank). It assigns grid_order as
-// MAX(grid_order)+1.
+// seeded from the manifest's own emoji/color (falling back to a deterministic
+// palette pick for whichever one the manifest left blank). It assigns
+// grid_order as MAX(grid_order)+1.
 func (s *Store) EnsureAppMeta(appID, displayName, emoji, color string) error {
 	if emoji == "" {
-		emoji = "📦"
+		emoji = pickDefaultEmoji(appID)
 	}
 	if color == "" {
 		color = pickDefaultColor(appID)
@@ -421,13 +420,15 @@ func (s *Store) EnsureAppMeta(appID, displayName, emoji, color string) error {
 // simply didn't exist yet — take effect on a later boot, without ever
 // clobbering a real customization made through the registry PATCH endpoint.
 func (s *Store) SyncAppMetaFromManifest(appID, manifestEmoji, manifestColor string) error {
-	if manifestEmoji != "" {
-		if _, err := s.db.Exec(
-			`UPDATE app_meta SET emoji = ? WHERE app_id = ? AND emoji = '📦'`,
-			manifestEmoji, appID,
-		); err != nil {
-			return fmt.Errorf("sync app_meta emoji %s: %w", appID, err)
-		}
+	emoji := manifestEmoji
+	if emoji == "" {
+		emoji = pickDefaultEmoji(appID)
+	}
+	if _, err := s.db.Exec(
+		`UPDATE app_meta SET emoji = ? WHERE app_id = ? AND emoji = '📦'`,
+		emoji, appID,
+	); err != nil {
+		return fmt.Errorf("sync app_meta emoji %s: %w", appID, err)
 	}
 	color := manifestColor
 	if color == "" {
