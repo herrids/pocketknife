@@ -60,6 +60,17 @@ func TestBootstrapRegistersAndActivatesNewApp(t *testing.T) {
 		t.Fatalf("active build pointer not durably recorded: %+v", active)
 	}
 
+	meta, err := bst.GetAppMeta("freshapp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta == nil {
+		t.Fatal("app_meta row should exist for a bootstrapped app")
+	}
+	if meta.DisplayName != "Fresh App" {
+		t.Fatalf("app_meta display name = %q, want %q", meta.DisplayName, "Fresh App")
+	}
+
 	// A row exists and the API surface works against a freshly materialized db.
 	now := store.NowUTC()
 	row, err := ra.Store.Insert(ra.Schema.EntityByID("ent_note"), map[string]any{
@@ -100,6 +111,20 @@ func TestBootstrapFailureLeavesNoPartialApp(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("staging directory should have been removed, found: %v", entries)
+	}
+
+	// The app_meta row is created as soon as the job reaches "building" --
+	// before frontend build, materialize, or activation run -- so it must
+	// still be there even though this bootstrap failed before any of that.
+	meta, err := bst.GetAppMeta("freshapp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta == nil {
+		t.Fatal("app_meta row should persist for a failed first install so the launcher can show it")
+	}
+	if meta.DisplayName != "Fresh App" {
+		t.Fatalf("app_meta display name = %q, want %q", meta.DisplayName, "Fresh App")
 	}
 }
 

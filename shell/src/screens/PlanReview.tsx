@@ -1,11 +1,27 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import ReactMarkdown, { type Components } from "react-markdown";
 import { api } from "../lib/api";
 
 interface ChatMessage {
   role: "user" | "assistant";
   text: string;
 }
+
+const markdownComponents: Components = {
+  p: ({ node: _node, ...props }) => <p className="mb-2 last:mb-0" {...props} />,
+  h1: ({ node: _node, ...props }) => <h1 className="font-semibold mb-1 mt-2 first:mt-0" {...props} />,
+  h2: ({ node: _node, ...props }) => <h2 className="font-semibold mb-1 mt-2 first:mt-0" {...props} />,
+  h3: ({ node: _node, ...props }) => <h3 className="font-semibold mb-1 mt-2 first:mt-0" {...props} />,
+  strong: ({ node: _node, ...props }) => <strong className="font-semibold" {...props} />,
+  em: ({ node: _node, ...props }) => <em className="italic" {...props} />,
+  ul: ({ node: _node, ...props }) => <ul className="list-disc pl-4 mb-2 space-y-0.5" {...props} />,
+  ol: ({ node: _node, ...props }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5" {...props} />,
+  li: ({ node: _node, ...props }) => <li className="leading-relaxed" {...props} />,
+  hr: ({ node: _node, ...props }) => <hr className="my-2 border-t border-current/20" {...props} />,
+  a: ({ node: _node, ...props }) => <a className="underline underline-offset-2" {...props} />,
+  code: ({ node: _node, ...props }) => <code className="font-mono text-xs bg-current/10 rounded px-1 py-0.5" {...props} />,
+};
 
 interface CheckItem {
   text: string;
@@ -155,7 +171,7 @@ export function PlanReview() {
                   : "bg-card dark:bg-[#28231C] text-ink dark:text-[#F3ECDD] rounded-bl-sm border border-ink/8 dark:border-white/8"
               }`}
             >
-              {msg.text}
+              <ReactMarkdown components={markdownComponents}>{msg.text}</ReactMarkdown>
             </div>
           </div>
         ))}

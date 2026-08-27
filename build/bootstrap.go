@@ -3,6 +3,7 @@ package build
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -55,6 +56,15 @@ func Bootstrap(reg *registry.Registry, bst *Store, appsDir string, manifestBytes
 	if _, err := bst.Transition(job.ID, StateBuilding, ""); err != nil {
 		os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("transition to building: %w", err)
+	}
+
+	// Make the app visible to GET /platform/registry from the moment its
+	// first build starts, not only once Bootstrap finishes or fails -- the
+	// launcher grid can then show a "building" tile instead of nothing.
+	// Non-fatal: display metadata is cosmetic, so a failure here must not
+	// abort an otherwise-successful build.
+	if err := bst.EnsureAppMeta(app.ID, app.Name, app.Emoji, app.Color); err != nil {
+		log.Printf("warning: ensure app_meta for %q at build start: %v", app.ID, err)
 	}
 
 	// cleanupDir tracks whatever directory currently holds the in-progress

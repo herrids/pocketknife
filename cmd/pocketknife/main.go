@@ -131,10 +131,15 @@ func runServe(args []string) {
 		log.Printf("warning: app %q has a stale or missing active-build pointer; serving API-only", id)
 	}
 
-	// Ensure every registered app has an app_meta row (default emoji/color/order).
+	// Ensure every registered app has an app_meta row (default emoji/color/order),
+	// then bring any row still stuck at the generic seed defaults up to date
+	// with its manifest (or a freshly assigned palette color).
 	for _, ra := range reg.Apps() {
 		if err := bst.EnsureAppMeta(ra.Schema.ID, ra.Schema.Name, ra.Schema.Emoji, ra.Schema.Color); err != nil {
 			log.Printf("warning: ensure app_meta for %q: %v", ra.Schema.ID, err)
+		}
+		if err := bst.SyncAppMetaFromManifest(ra.Schema.ID, ra.Schema.Emoji, ra.Schema.Color); err != nil {
+			log.Printf("warning: sync app_meta for %q: %v", ra.Schema.ID, err)
 		}
 	}
 

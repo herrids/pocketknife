@@ -43,8 +43,8 @@ func TestEnsureAppMeta_Defaults(t *testing.T) {
 	if m == nil {
 		t.Fatal("expected row, got nil")
 	}
-	if m.Emoji != "📦" {
-		t.Errorf("emoji = %q, want 📦", m.Emoji)
+	if m.Emoji == "📦" {
+		t.Errorf("emoji = %q, expected a palette emoji instead of the old shared default", m.Emoji)
 	}
 	if m.DisplayName != "My App" {
 		t.Errorf("displayName = %q, want 'My App'", m.DisplayName)
@@ -206,6 +206,72 @@ func TestRegistryList(t *testing.T) {
 	_ = json.NewDecoder(rr.Body).Decode(&entries)
 	if len(entries) != 1 || entries[0]["appId"] != "myapp" {
 		t.Errorf("unexpected registry response: %v", entries)
+	}
+}
+
+func TestRegistryList_BuildingApp(t *testing.T) {
+	srv, st := newTestServer(t)
+	_ = st.EnsureAppMeta("newapp", "New App", "", "")
+	job, err := st.CreateJob("newapp", build.KindInstall, 1)
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if _, err := st.Transition(job.ID, build.StateBuilding, ""); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	tok := login(t, srv)
+
+	req := httptest.NewRequest(http.MethodGet, "/platform/registry", nil)
+	req.AddCookie(&http.Cookie{Name: "pk_session", Value: tok})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var entries []map[string]any
+	_ = json.NewDecoder(rr.Body).Decode(&entries)
+	if len(entries) != 1 || entries[0]["appId"] != "newapp" {
+		t.Fatalf("unexpected registry response: %v", entries)
+	}
+	if entries[0]["buildState"] != "building" {
+		t.Errorf("buildState = %v, want building", entries[0]["buildState"])
+	}
+	if entries[0]["activeBuildId"] != job.ID {
+		t.Errorf("activeBuildId = %v, want %q", entries[0]["activeBuildId"], job.ID)
+	}
+}
+
+func TestRegistryList_FailedBuildApp(t *testing.T) {
+	srv, st := newTestServer(t)
+	_ = st.EnsureAppMeta("brokenapp", "Broken App", "", "")
+	job, err := st.CreateJob("brokenapp", build.KindInstall, 1)
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if _, err := st.Transition(job.ID, build.StateBuilding, ""); err != nil {
+		t.Fatalf("Transition to building: %v", err)
+	}
+	if _, err := st.Transition(job.ID, build.StateFailed, "boom"); err != nil {
+		t.Fatalf("Transition to failed: %v", err)
+	}
+	tok := login(t, srv)
+
+	req := httptest.NewRequest(http.MethodGet, "/platform/registry", nil)
+	req.AddCookie(&http.Cookie{Name: "pk_session", Value: tok})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	var entries []map[string]any
+	_ = json.NewDecoder(rr.Body).Decode(&entries)
+	if len(entries) != 1 || entries[0]["appId"] != "brokenapp" {
+		t.Fatalf("unexpected registry response: %v", entries)
+	}
+	if entries[0]["buildState"] != "failed" {
+		t.Errorf("buildState = %v, want failed", entries[0]["buildState"])
 	}
 }
 
