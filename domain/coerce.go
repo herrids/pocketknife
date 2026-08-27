@@ -1,26 +1,36 @@
-package api
+package domain
 
 import (
 	"encoding/json"
 	"fmt"
 
-	"pocketknife/registry"
 	"pocketknife/schema"
 	"pocketknife/store"
 )
 
-// coerce validates and converts one present body value for a field into its
-// canonical storage representation. It returns (value, isNull, issue):
-//   - issue != nil  → the value failed field validation (HTTP 400)
-//   - isNull == true → the field was explicitly set to JSON null
+// CoerceFieldValue validates and converts one present runtime value for a
+// field into its canonical storage representation. It returns
+// (value, isNull, err):
 //
-// The same field rules used to validate a manifest's defaults are applied here,
-// so the API boundary enforces exactly what the schema promises.
-func coerce(ra *registry.RegisteredApp, f *schema.Field, raw json.RawMessage) (any, bool, *fieldIssue) {
+//   - err != nil     → the value failed field validation
+//   - isNull == true → the value was explicitly a JSON null
+//
+// This validates a *runtime row value* arriving as raw wire bytes — not a
+// manifest's declared default, which validate/semantic.go's validateDefault
+// checks separately, at a different time, against an already-parsed Go
+// value with no JSON decoding, no reference-existence check (no store is
+// open at manifest-validation time), and no datetime re-parsing (the parser
+// already canonicalised it). The two are related but not the same operation
+// and are deliberately not merged.
+//
+// This is the one place field-coercion rules live; api/ and sandbox/ each
+// wrap it in their own transport-specific error shape rather than
+// reimplementing the rules.
+func CoerceFieldValue(app *schema.App, st RowStore, f *schema.Field, raw json.RawMessage) (any, bool, *FieldError) {
 	if isJSONNull(raw) {
 		return nil, true, nil
 	}
-	issue := func(msg string) *fieldIssue { return &fieldIssue{Field: f.Name, Message: msg} }
+	issue := func(msg string) *FieldError { return &FieldError{Field: f.Name, Message: msg} }
 
 	switch f.Type {
 	case schema.TypeText:
@@ -30,10 +40,10 @@ func coerce(ra *registry.RegisteredApp, f *schema.Field, raw json.RawMessage) (a
 		}
 		n := float64(len([]rune(s)))
 		if f.Min != nil && n < *f.Min {
-			return nil, false, issue(fmt.Sprintf("must be at least %s characters", num(*f.Min)))
+			return nil, false, issue(fmt.Sprintf("must be at least %s characters", numStr(*f.Min)))
 		}
 		if f.Max != nil && n > *f.Max {
-			return nil, false, issue(fmt.Sprintf("must be at most %s characters", num(*f.Max)))
+			return nil, false, issue(fmt.Sprintf("must be at most %s characters", numStr(*f.Max)))
 		}
 		return s, false, nil
 
@@ -47,10 +57,10 @@ func coerce(ra *registry.RegisteredApp, f *schema.Field, raw json.RawMessage) (a
 			return nil, false, issue("must be a whole integer")
 		}
 		if f.Min != nil && float64(i) < *f.Min {
-			return nil, false, issue(fmt.Sprintf("must be >= %s", num(*f.Min)))
+			return nil, false, issue(fmt.Sprintf("must be >= %s", numStr(*f.Min)))
 		}
 		if f.Max != nil && float64(i) > *f.Max {
-			return nil, false, issue(fmt.Sprintf("must be <= %s", num(*f.Max)))
+			return nil, false, issue(fmt.Sprintf("must be <= %s", numStr(*f.Max)))
 		}
 		return i, false, nil
 
@@ -64,10 +74,10 @@ func coerce(ra *registry.RegisteredApp, f *schema.Field, raw json.RawMessage) (a
 			return nil, false, issue("must be a number")
 		}
 		if f.Min != nil && fv < *f.Min {
-			return nil, false, issue(fmt.Sprintf("must be >= %s", num(*f.Min)))
+			return nil, false, issue(fmt.Sprintf("must be >= %s", numStr(*f.Min)))
 		}
 		if f.Max != nil && fv > *f.Max {
-			return nil, false, issue(fmt.Sprintf("must be <= %s", num(*f.Max)))
+			return nil, false, issue(fmt.Sprintf("must be <= %s", numStr(*f.Max)))
 		}
 		return fv, false, nil
 
@@ -106,11 +116,11 @@ func coerce(ra *registry.RegisteredApp, f *schema.Field, raw json.RawMessage) (a
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return nil, false, issue("must be a reference id string")
 		}
-		target := ra.Schema.EntityByID(f.Target)
+		target := app.EntityByID(f.Target)
 		if target == nil {
 			return nil, false, issue("reference target is not available")
 		}
-		ok, err := ra.Store.Exists(target, s)
+		ok, err := st.Exists(target, s)
 		if err != nil {
 			return nil, false, issue("could not verify reference target")
 		}
@@ -124,11 +134,26 @@ func coerce(ra *registry.RegisteredApp, f *schema.Field, raw json.RawMessage) (a
 	}
 }
 
+// DefaultStoreValue converts a field's declared default into its
+// storage-ready value. Datetime defaults are canonicalised at this point
+// (not at manifest-parse time); other types are already in their canonical
+// Go form from schema.Parse's normalisation.
+func DefaultStoreValue(f *schema.Field) any {
+	if f.Type == schema.TypeDatetime {
+		if s, ok := f.Default.(string); ok {
+			if canon, err := store.CanonicalDatetime(s); err == nil {
+				return canon
+			}
+		}
+	}
+	return f.Default
+}
+
 func isJSONNull(raw json.RawMessage) bool {
 	return len(raw) == 4 && string(raw) == "null"
 }
 
-func num(v float64) string {
+func numStr(v float64) string {
 	if v == float64(int64(v)) {
 		return fmt.Sprintf("%d", int64(v))
 	}

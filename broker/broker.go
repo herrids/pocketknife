@@ -3,6 +3,10 @@
 // environment, held in an unexported field, and never reaches a function or
 // the browser. A function that declares the model capability gets to send a
 // prompt and get text back — never the token, never a raw provider client.
+//
+// Status: implemented and tested in isolation; nothing in this binary
+// currently constructs a Broker from the environment or wires sandbox/ into
+// a live call path. See docs/phase-4-wiring.md.
 package broker
 
 import (

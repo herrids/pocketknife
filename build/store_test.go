@@ -2,8 +2,71 @@ package build
 
 import (
 	"errors"
+	"sync"
 	"testing"
+	"time"
 )
+
+// TestLockAppSerializesSameAppID proves two concurrent holders of the same
+// app id's lock never run their critical sections at the same time.
+func TestLockAppSerializesSameAppID(t *testing.T) {
+	bst := openTestStore(t)
+
+	var mu sync.Mutex // guards the plain counters below, independent of LockApp
+	var active, maxActive int
+	var wg sync.WaitGroup
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unlock := bst.LockApp("same-app")
+			defer unlock()
+
+			mu.Lock()
+			active++
+			if active > maxActive {
+				maxActive = active
+			}
+			mu.Unlock()
+
+			time.Sleep(2 * time.Millisecond) // widen the window a real race would need
+
+			mu.Lock()
+			active--
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if maxActive != 1 {
+		t.Fatalf("max concurrently active holders of the same app id's lock = %d, want 1", maxActive)
+	}
+}
+
+// TestLockAppDoesNotSerializeDifferentAppIDs proves the lock is per-app-id,
+// not global: two different app ids must be able to make progress at the
+// same time, never waiting on each other.
+func TestLockAppDoesNotSerializeDifferentAppIDs(t *testing.T) {
+	bst := openTestStore(t)
+
+	unlockA := bst.LockApp("app-a")
+	defer unlockA()
+
+	done := make(chan struct{})
+	go func() {
+		unlockB := bst.LockApp("app-b")
+		defer unlockB()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// app-b's lock was acquired without waiting on app-a's — correct.
+	case <-time.After(2 * time.Second):
+		t.Fatal("a different app id's LockApp call blocked on an unrelated app id's lock")
+	}
+}
 
 func TestCreateJobStartsQueued(t *testing.T) {
 	bst := openTestStore(t)

@@ -1,18 +1,21 @@
 // Package api is the one generic, schema-driven HTTP surface that serves every
-// app. Nothing here is specific to any app: each handler resolves the app by id
-// from the registry and serves it from its registered schema. Routes are
-// namespaced by app: /apps/{app_id}/{entity_name}.
+// app. It is a thin transport adapter: every handler parses the HTTP-specific
+// parts of the request (path values, query string, request body bytes),
+// calls the matching pocketknife/domain operation, and maps the result back
+// onto the wire — the field-validation rules, the app/entity/operation
+// resolution, and the store calls all live in domain, not here, so a future
+// non-HTTP caller (an MCP tool, or any other internal Workbench caller) can
+// call the same operations directly. Routes are namespaced by app:
+// /apps/{app_id}/{entity_name}.
 package api
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 
+	"pocketknife/domain"
 	"pocketknife/registry"
-	"pocketknife/schema"
-	"pocketknife/store"
 )
 
 // Server wraps the registry and exposes an http.Handler.
@@ -32,241 +35,102 @@ func NewServer(reg *registry.Registry) http.Handler {
 	return mux
 }
 
-// resolve looks up the app and entity from the path, writing a 404 and
-// returning ok=false if either is unknown.
-func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*registry.RegisteredApp, *schema.Entity, bool) {
-	appID := r.PathValue("app")
-	entName := r.PathValue("entity")
-
-	ra, ok := s.reg.App(appID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "app_not_found", "no app with id "+appID)
-		return nil, nil, false
-	}
-	ent := ra.Schema.Entity(entName)
-	if ent == nil {
-		writeError(w, http.StatusNotFound, "entity_not_found", "no entity "+entName+" in app "+appID)
-		return nil, nil, false
-	}
-	return ra, ent, true
-}
-
-// requireOp enforces the entity's operation set, writing 405 if disabled.
-func requireOp(w http.ResponseWriter, ent *schema.Entity, op schema.Operation) bool {
-	if !ent.Allows(op) {
-		writeError(w, http.StatusMethodNotAllowed, "operation_disabled",
-			"operation "+string(op)+" is not enabled for entity "+ent.Name)
-		return false
-	}
-	return true
-}
-
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	ra, ent, ok := s.resolve(w, r)
-	if !ok {
-		return
-	}
-	if !requireOp(w, ent, schema.OpCreate) {
-		return
-	}
-
+	appID, entName := r.PathValue("app"), r.PathValue("entity")
 	body, ok := decodeBody(w, r)
 	if !ok {
 		return
 	}
-
-	values := map[string]any{}
-	var issues []any
-
-	for key := range body {
-		if ent.Field(key) == nil {
-			issues = append(issues, fieldIssue{Field: key, Message: "unknown field"})
-		}
-	}
-
-	for _, f := range ent.Fields {
-		raw, present := body[f.Name]
-		if !present {
-			if f.HasDefault {
-				values[f.Name] = defaultStoreValue(f)
-			} else if f.Required {
-				issues = append(issues, fieldIssue{Field: f.Name, Message: "is required"})
-			}
-			continue
-		}
-		val, isNull, issue := coerce(ra, f, raw)
-		if issue != nil {
-			issues = append(issues, *issue)
-			continue
-		}
-		if isNull {
-			if f.Required {
-				issues = append(issues, fieldIssue{Field: f.Name, Message: "is required and cannot be null"})
-				continue
-			}
-			values[f.Name] = nil
-			continue
-		}
-		values[f.Name] = val
-	}
-
-	if len(issues) > 0 {
-		writeError(w, http.StatusBadRequest, "validation_failed", "request body failed validation", issues...)
+	if issues := s.unknownFieldIssues(appID, entName, body); len(issues) > 0 {
+		writeValidationError(w, issues)
 		return
 	}
 
-	now := store.NowUTC()
-	values["id"] = store.NewID()
-	values["created_at"] = now
-	values["updated_at"] = now
-
-	row, err := ra.Store.Insert(ent, values)
-	if err != nil {
-		writeStoreError(w, err)
+	row, operr := domain.Create(s.reg, appID, entName, body)
+	if operr != nil {
+		writeOpError(w, operr)
 		return
 	}
 	writeJSON(w, http.StatusCreated, row)
 }
 
 func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
-	ra, ent, ok := s.resolve(w, r)
-	if !ok {
-		return
-	}
-	if !requireOp(w, ent, schema.OpRead) {
-		return
-	}
-	row, err := ra.Store.GetByID(ent, r.PathValue("id"))
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	if row == nil {
-		writeNotFoundRow(w, ent, r.PathValue("id"))
+	row, operr := domain.Get(s.reg, r.PathValue("app"), r.PathValue("entity"), r.PathValue("id"))
+	if operr != nil {
+		writeOpError(w, operr)
 		return
 	}
 	writeJSON(w, http.StatusOK, row)
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	ra, ent, ok := s.resolve(w, r)
-	if !ok {
-		return
-	}
-	if !requireOp(w, ent, schema.OpRead) {
-		return
-	}
-	q, issue := parseListQuery(ent, r.URL.Query())
-	if issue != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", issue.Message, *issue)
-		return
-	}
-	rows, total, err := ra.Store.List(ent, q)
-	if err != nil {
-		writeStoreError(w, err)
+	res, operr := domain.List(s.reg, r.PathValue("app"), r.PathValue("entity"), r.URL.Query())
+	if operr != nil {
+		writeOpError(w, operr)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data":   rows,
-		"total":  total,
-		"limit":  q.Limit,
-		"offset": q.Offset,
+		"data":   res.Rows,
+		"total":  res.Total,
+		"limit":  res.Limit,
+		"offset": res.Offset,
 	})
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	ra, ent, ok := s.resolve(w, r)
-	if !ok {
-		return
-	}
-	if !requireOp(w, ent, schema.OpUpdate) {
-		return
-	}
-	id := r.PathValue("id")
-
-	existing, err := ra.Store.GetByID(ent, id)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	if existing == nil {
-		writeNotFoundRow(w, ent, id)
-		return
-	}
-
+	appID, entName := r.PathValue("app"), r.PathValue("entity")
 	body, ok := decodeBody(w, r)
 	if !ok {
 		return
 	}
-
-	values := map[string]any{}
-	var issues []any
-	for key := range body {
-		if ent.Field(key) == nil {
-			issues = append(issues, fieldIssue{Field: key, Message: "unknown field"})
-		}
-	}
-	for _, f := range ent.Fields {
-		raw, present := body[f.Name]
-		if !present {
-			continue // partial update: untouched fields are left as-is
-		}
-		val, isNull, issue := coerce(ra, f, raw)
-		if issue != nil {
-			issues = append(issues, *issue)
-			continue
-		}
-		if isNull {
-			if f.Required {
-				issues = append(issues, fieldIssue{Field: f.Name, Message: "is required and cannot be null"})
-				continue
-			}
-			values[f.Name] = nil
-			continue
-		}
-		values[f.Name] = val
-	}
-	if len(issues) > 0 {
-		writeError(w, http.StatusBadRequest, "validation_failed", "request body failed validation", issues...)
+	if issues := s.unknownFieldIssues(appID, entName, body); len(issues) > 0 {
+		writeValidationError(w, issues)
 		return
 	}
 
-	values["updated_at"] = store.NowUTC()
-
-	row, err := ra.Store.Update(ent, id, values)
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	if row == nil {
-		writeNotFoundRow(w, ent, id)
+	row, operr := domain.Update(s.reg, appID, entName, r.PathValue("id"), body)
+	if operr != nil {
+		writeOpError(w, operr)
 		return
 	}
 	writeJSON(w, http.StatusOK, row)
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	ra, ent, ok := s.resolve(w, r)
-	if !ok {
-		return
-	}
-	if !requireOp(w, ent, schema.OpDelete) {
-		return
-	}
-	deleted, err := ra.Store.Delete(ent, r.PathValue("id"))
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	if !deleted {
-		writeNotFoundRow(w, ent, r.PathValue("id"))
+	_, operr := domain.Delete(s.reg, r.PathValue("app"), r.PathValue("entity"), r.PathValue("id"))
+	if operr != nil {
+		writeOpError(w, operr)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// unknownFieldIssues reports any body key that isn't one of the entity's
+// declared fields. This is an HTTP-body strictness policy, not a coercion
+// rule, so it lives here rather than in domain: a request body's shape is a
+// wire-transport concern. If the app or entity can't be resolved, this
+// simply has nothing to check — domain.Create/Update will independently
+// resolve and report the real app_not_found/entity_not_found error.
+func (s *Server) unknownFieldIssues(appID, entName string, body map[string]json.RawMessage) []domain.FieldError {
+	ra, ok := s.reg.App(appID)
+	if !ok {
+		return nil
+	}
+	ent := ra.Schema.Entity(entName)
+	if ent == nil {
+		return nil
+	}
+	var issues []domain.FieldError
+	for key := range body {
+		if ent.Field(key) == nil {
+			issues = append(issues, domain.FieldError{Field: key, Message: "unknown field"})
+		}
+	}
+	return issues
+}
+
 // decodeBody reads a JSON object body into raw per-key messages, deferring
-// per-field decoding to coerce. A non-object or malformed body is a 400.
+// per-field decoding to domain. A non-object or malformed body is a 400.
 func decodeBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, bool) {
 	defer r.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -285,33 +149,42 @@ func decodeBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMess
 	return body, true
 }
 
-// defaultStoreValue converts a field's declared default into the storage-ready
-// value. Datetime defaults are canonicalised; other types are already in their
-// canonical Go form from manifest parsing.
-func defaultStoreValue(f *schema.Field) any {
-	if f.Type == schema.TypeDatetime {
-		if s, ok := f.Default.(string); ok {
-			if canon, err := store.CanonicalDatetime(s); err == nil {
-				return canon
-			}
-		}
+// writeValidationError writes the standard 400 body-validation shape for a
+// non-empty issue list.
+func writeValidationError(w http.ResponseWriter, issues []domain.FieldError) {
+	details := make([]any, len(issues))
+	for i, iss := range issues {
+		details[i] = iss
 	}
-	return f.Default
+	writeError(w, http.StatusBadRequest, "validation_failed", "request body failed validation", details...)
 }
 
-func writeNotFoundRow(w http.ResponseWriter, ent *schema.Entity, id string) {
-	writeError(w, http.StatusNotFound, "row_not_found", "no "+ent.Name+" with id "+id)
-}
-
-// writeStoreError maps store sentinel errors to HTTP status codes; anything
-// else is a 500.
-func writeStoreError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, store.ErrUnique):
-		writeError(w, http.StatusConflict, "unique_violation", "a row with this value already exists")
-	case errors.Is(err, store.ErrForeignKey):
-		writeError(w, http.StatusConflict, "reference_conflict", "operation violates a reference constraint")
+// writeOpError maps a domain operation's structured error onto this API's
+// wire contract — the one place that translates domain.ErrorKind into an
+// HTTP status code, error code, and message.
+func writeOpError(w http.ResponseWriter, operr *domain.OpError) {
+	switch operr.Kind {
+	case domain.ErrAppNotFound:
+		writeError(w, http.StatusNotFound, "app_not_found", operr.Message)
+	case domain.ErrEntityNotFound:
+		writeError(w, http.StatusNotFound, "entity_not_found", operr.Message)
+	case domain.ErrOperationDisabled:
+		writeError(w, http.StatusMethodNotAllowed, "operation_disabled", operr.Message)
+	case domain.ErrValidation:
+		writeValidationError(w, operr.Issues)
+	case domain.ErrInvalidQuery:
+		details := make([]any, len(operr.Issues))
+		for i, iss := range operr.Issues {
+			details[i] = iss
+		}
+		writeError(w, http.StatusBadRequest, "invalid_query", operr.Message, details...)
+	case domain.ErrRowNotFound:
+		writeError(w, http.StatusNotFound, "row_not_found", operr.Message)
+	case domain.ErrUnique:
+		writeError(w, http.StatusConflict, "unique_violation", operr.Message)
+	case domain.ErrReferenceConflict:
+		writeError(w, http.StatusConflict, "reference_conflict", operr.Message)
 	default:
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeError(w, http.StatusInternalServerError, "internal_error", operr.Message)
 	}
 }

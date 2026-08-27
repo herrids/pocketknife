@@ -1,4 +1,4 @@
-package api
+package domain
 
 import (
 	"fmt"
@@ -32,27 +32,27 @@ var operatorSQL = map[string]string{
 //	filter=<field>:<op>:<value>   (repeatable, AND-combined)
 //	sort=<field> | sort=-<field>  (repeatable)
 //	limit=<n>  offset=<n>
-func parseListQuery(ent *schema.Entity, values url.Values) (store.ListQuery, *fieldIssue) {
+func parseListQuery(ent *schema.Entity, values url.Values) (store.ListQuery, *FieldError) {
 	q := store.ListQuery{Limit: defaultLimit, Offset: 0}
 
 	for _, raw := range values["filter"] {
 		parts := strings.SplitN(raw, ":", 3)
 		if len(parts) != 3 {
-			return q, &fieldIssue{Field: "filter", Message: fmt.Sprintf("malformed filter %q, expected field:op:value", raw)}
+			return q, &FieldError{Field: "filter", Message: fmt.Sprintf("malformed filter %q, expected field:op:value", raw)}
 		}
 		field, op, valStr := parts[0], parts[1], parts[2]
 
 		sqlOp, ok := operatorSQL[op]
 		if !ok {
-			return q, &fieldIssue{Field: "filter", Message: fmt.Sprintf("unknown operator %q", op)}
+			return q, &FieldError{Field: "filter", Message: fmt.Sprintf("unknown operator %q", op)}
 		}
 		colType, ok := resolveColumn(ent, field)
 		if !ok {
-			return q, &fieldIssue{Field: "filter", Message: fmt.Sprintf("unknown field %q", field)}
+			return q, &FieldError{Field: "filter", Message: fmt.Sprintf("unknown field %q", field)}
 		}
 		val, err := coerceFilterValue(colType, op, valStr)
 		if err != nil {
-			return q, &fieldIssue{Field: "filter", Message: err.Error()}
+			return q, &FieldError{Field: "filter", Message: err.Error()}
 		}
 		q.Filters = append(q.Filters, store.Filter{Column: field, Operator: sqlOp, Value: val})
 	}
@@ -65,7 +65,7 @@ func parseListQuery(ent *schema.Entity, values url.Values) (store.ListQuery, *fi
 			field = raw[1:]
 		}
 		if _, ok := resolveColumn(ent, field); !ok {
-			return q, &fieldIssue{Field: "sort", Message: fmt.Sprintf("unknown field %q", field)}
+			return q, &FieldError{Field: "sort", Message: fmt.Sprintf("unknown field %q", field)}
 		}
 		q.Sorts = append(q.Sorts, store.Sort{Column: field, Desc: desc})
 	}
@@ -73,7 +73,7 @@ func parseListQuery(ent *schema.Entity, values url.Values) (store.ListQuery, *fi
 	if raw := values.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 0 {
-			return q, &fieldIssue{Field: "limit", Message: "must be a non-negative integer"}
+			return q, &FieldError{Field: "limit", Message: "must be a non-negative integer"}
 		}
 		if n > maxLimit {
 			n = maxLimit
@@ -83,7 +83,7 @@ func parseListQuery(ent *schema.Entity, values url.Values) (store.ListQuery, *fi
 	if raw := values.Get("offset"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 0 {
-			return q, &fieldIssue{Field: "offset", Message: "must be a non-negative integer"}
+			return q, &FieldError{Field: "offset", Message: "must be a non-negative integer"}
 		}
 		q.Offset = n
 	}

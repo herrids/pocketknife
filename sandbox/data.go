@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"pocketknife/domain"
 	"pocketknife/schema"
 	"pocketknife/store"
 )
@@ -78,7 +79,7 @@ func dataCreate(inv *invocation, ent *schema.Entity, req dataRequest) ([]byte, i
 		raw, present := req.Values[f.Name]
 		if !present {
 			if f.HasDefault {
-				values[f.Name] = defaultStoreValue(f)
+				values[f.Name] = domain.DefaultStoreValue(f)
 			} else if f.Required {
 				return errorBody(f.Name + " is required"), codeBadRequest
 			}
@@ -181,143 +182,18 @@ func dataDelete(inv *invocation, ent *schema.Entity, req dataRequest) ([]byte, i
 	return successBody(map[string]any{"deleted": deleted})
 }
 
-// defaultStoreValue converts a field's declared default into its
-// storage-ready value. Mirrors api/api.go's defaultStoreValue; duplicated
-// rather than shared because sandbox must not import api (api will import
-// sandbox to wire the function-invocation HTTP endpoint).
-func defaultStoreValue(f *schema.Field) any {
-	if f.Type == schema.TypeDatetime {
-		if s, ok := f.Default.(string); ok {
-			if canon, err := store.CanonicalDatetime(s); err == nil {
-				return canon
-			}
-		}
-	}
-	return f.Default
-}
-
 // coerceValue validates and converts one field's raw JSON value into its
-// canonical storage representation. It mirrors api/coerce.go's coerce, with
-// two differences: it depends only on schema and store (not registry or
-// api, to avoid an import cycle), and it returns a plain error instead of a
-// *fieldIssue, since a function's data_call has no HTTP body to attach field
-// issues to.
+// canonical storage representation. It is a thin adapter over
+// domain.CoerceFieldValue — the same rule-checking logic api/coerce.go's
+// coerce() uses — reformatting the shared *domain.FieldError into the plain,
+// field-prefixed error string a function's data_call has always returned
+// (data_call has no HTTP body to attach a separate field/message pair to).
 func coerceValue(app *schema.App, st *store.Store, f *schema.Field, raw json.RawMessage) (any, bool, error) {
-	if isJSONNull(raw) {
-		return nil, true, nil
+	val, isNull, ferr := domain.CoerceFieldValue(app, st, f, raw)
+	if ferr != nil {
+		return nil, false, fmt.Errorf("%s: %s", ferr.Field, ferr.Message)
 	}
-
-	switch f.Type {
-	case schema.TypeText:
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, false, fmt.Errorf("%s: must be a string", f.Name)
-		}
-		n := float64(len([]rune(s)))
-		if f.Min != nil && n < *f.Min {
-			return nil, false, fmt.Errorf("%s: must be at least %s characters", f.Name, numStr(*f.Min))
-		}
-		if f.Max != nil && n > *f.Max {
-			return nil, false, fmt.Errorf("%s: must be at most %s characters", f.Name, numStr(*f.Max))
-		}
-		return s, false, nil
-
-	case schema.TypeInteger:
-		var jn json.Number
-		if err := json.Unmarshal(raw, &jn); err != nil {
-			return nil, false, fmt.Errorf("%s: must be an integer", f.Name)
-		}
-		i, err := jn.Int64()
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: must be a whole integer", f.Name)
-		}
-		if f.Min != nil && float64(i) < *f.Min {
-			return nil, false, fmt.Errorf("%s: must be >= %s", f.Name, numStr(*f.Min))
-		}
-		if f.Max != nil && float64(i) > *f.Max {
-			return nil, false, fmt.Errorf("%s: must be <= %s", f.Name, numStr(*f.Max))
-		}
-		return i, false, nil
-
-	case schema.TypeReal:
-		var jn json.Number
-		if err := json.Unmarshal(raw, &jn); err != nil {
-			return nil, false, fmt.Errorf("%s: must be a number", f.Name)
-		}
-		fv, err := jn.Float64()
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: must be a number", f.Name)
-		}
-		if f.Min != nil && fv < *f.Min {
-			return nil, false, fmt.Errorf("%s: must be >= %s", f.Name, numStr(*f.Min))
-		}
-		if f.Max != nil && fv > *f.Max {
-			return nil, false, fmt.Errorf("%s: must be <= %s", f.Name, numStr(*f.Max))
-		}
-		return fv, false, nil
-
-	case schema.TypeBoolean:
-		var b bool
-		if err := json.Unmarshal(raw, &b); err != nil {
-			return nil, false, fmt.Errorf("%s: must be a boolean", f.Name)
-		}
-		return b, false, nil
-
-	case schema.TypeDatetime:
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, false, fmt.Errorf("%s: must be an ISO-8601 datetime string", f.Name)
-		}
-		canon, err := store.CanonicalDatetime(s)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: %s", f.Name, err.Error())
-		}
-		return canon, false, nil
-
-	case schema.TypeEnum:
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, false, fmt.Errorf("%s: must be a string", f.Name)
-		}
-		for _, v := range f.Values {
-			if v == s {
-				return s, false, nil
-			}
-		}
-		return nil, false, fmt.Errorf("%s: must be one of %v", f.Name, f.Values)
-
-	case schema.TypeReference:
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return nil, false, fmt.Errorf("%s: must be a reference id string", f.Name)
-		}
-		target := app.EntityByID(f.Target)
-		if target == nil {
-			return nil, false, fmt.Errorf("%s: reference target is not available", f.Name)
-		}
-		ok, err := st.Exists(target, s)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: could not verify reference target", f.Name)
-		}
-		if !ok {
-			return nil, false, fmt.Errorf("%s: referenced %s %q does not exist", f.Name, target.Name, s)
-		}
-		return s, false, nil
-
-	default:
-		return nil, false, fmt.Errorf("%s: unsupported field type", f.Name)
-	}
-}
-
-func isJSONNull(raw json.RawMessage) bool {
-	return len(raw) == 4 && string(raw) == "null"
-}
-
-func numStr(v float64) string {
-	if v == float64(int64(v)) {
-		return fmt.Sprintf("%d", int64(v))
-	}
-	return fmt.Sprintf("%g", v)
+	return val, isNull, nil
 }
 
 // successBody marshals v as the body of a successful gated call (code 0,

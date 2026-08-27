@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -166,6 +168,43 @@ func TestExtractBundleRejectsTooManyBytes(t *testing.T) {
 
 	if err := ExtractBundle(bytes.NewReader(data), dest); err == nil {
 		t.Fatal("expected an error for exceeding the total byte cap")
+	}
+}
+
+// TestExtractBundleCleansUpPartialExtractionOnFailure proves that a failed
+// extraction never leaves partial content behind: destDir itself is removed,
+// not just left with whatever had been written before the failing entry.
+func TestExtractBundleCleansUpPartialExtractionOnFailure(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "bundle")
+	big := make([]byte, MaxBundleBytes/2+1)
+	data := buildTarGz(t, []tarEntry{
+		{name: "a.bin", content: string(big)},
+		{name: "b.bin", content: string(big)},
+	})
+
+	if err := ExtractBundle(bytes.NewReader(data), dest); err == nil {
+		t.Fatal("expected an error for exceeding the total byte cap")
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatalf("destination directory must be removed after a failed extraction, stat err = %v", err)
+	}
+}
+
+// TestWriteBundleFileEnforcesActualBytesNotDeclaredSize proves the byte cap
+// is enforced against bytes actually copied, not a tar header's declared
+// size: writeBundleFile is handed a source that offers more bytes than its
+// budget allows, independent of any tar framing, and must refuse regardless
+// of what any header claimed.
+func TestWriteBundleFileEnforcesActualBytesNotDeclaredSize(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	src := strings.NewReader(strings.Repeat("x", 100))
+
+	n, err := writeBundleFile(dest, src, 10)
+	if !errors.Is(err, errBundleTooLarge) {
+		t.Fatalf("err = %v, want errBundleTooLarge", err)
+	}
+	if n <= 10 {
+		t.Fatalf("bytes written = %d, want more than the 10-byte budget (that overrun is what must be detected)", n)
 	}
 }
 

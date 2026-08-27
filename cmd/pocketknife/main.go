@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"pocketknife/api"
@@ -80,7 +81,7 @@ func loadDotEnv(path string) {
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	appsDir := fs.String("apps", "apps", "directory containing <app_id>/manifest.json")
-	addr := fs.String("addr", ":8080", "address to listen on")
+	addr := fs.String("addr", "127.0.0.1:8080", "address to listen on (127.0.0.1-only by default: the Workbench v0.1 runtime assumes a trusted local machine; pass e.g. -addr :8080 to bind every interface, an explicit choice to expose it to a network)")
 	platformDBPath := fs.String("platform-db", "platform.db", "path to the platform build-job database")
 	shellDist := fs.String("shell-dist", "shell/dist", "directory containing the compiled shell SPA (served at /)")
 	agentBin := fs.String("agent-bin", "", "path to the agent binary (defaults to tsx agent/src/cli.ts)")
@@ -159,11 +160,28 @@ func runServe(args []string) {
 	// Shell SPA must be last — it serves / and falls through for anything unknown.
 	mux.Handle("/", shellserve.NewServer(*shellDist))
 
-	handler := cors.Middleware(*corsEnabled, mux)
+	handler := recoverMiddleware(cors.Middleware(*corsEnabled, mux))
 	log.Printf("pocketknife listening on %s (apps dir: %s)", *addr, *appsDir)
 	if err := http.ListenAndServe(*addr, handler); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// recoverMiddleware catches a panic from any handler and turns it into a
+// plain 500, so a bug in one request can never take down the whole process —
+// every other app being served by this one binary must keep working. The
+// panic value and a stack trace go to the server log only; the client never
+// sees more than a bare status code.
+func recoverMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("panic serving %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // runMigrate drives the apply-changeset flow for one app. The app's current

@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 
 	_ "modernc.org/sqlite"
 
@@ -83,6 +84,32 @@ type ActiveBuild struct {
 // build pointer per app. It is wholly separate from any app's data.db.
 type Store struct {
 	db *sql.DB
+
+	// failTransitionTo and failNextPromoteActive are test-only fault
+	// injectors, always zero-valued outside this package's own tests. They
+	// exist because Deploy's rollback-on-late-failure branches (Transition to
+	// StateActivating, and PromoteActive, both after a data migration and a
+	// frontend build have already succeeded) are otherwise only reachable via
+	// a genuine platform-database I/O failure, which cannot be triggered
+	// deterministically from a test. Each fires (and self-resets) exactly
+	// once, on the next matching call, so a retry after the injected failure
+	// behaves exactly like a real one.
+	failTransitionTo      State
+	failNextPromoteActive bool
+
+	// appLocks backs LockApp: one mutex per app id, shared by every in-process
+	// caller that deploys through this *Store, so a caller deciding between
+	// Deploy and Bootstrap (deployapi.handleDeploy today; a future MCP deploy
+	// tool tomorrow) can make that decision and act on it as one atomic step,
+	// without needing its own separate lock map. Different app ids never
+	// block each other. This does not, and cannot, serialize across OS
+	// processes (e.g. a running `pocketknife serve` against a concurrent
+	// `pocketknife build` CLI invocation): each process opens its own *Store
+	// over the same platform.db, with its own empty lock map. That cross-
+	// process case is a known, accepted limitation for this local-first
+	// runtime, not something an in-memory mutex can address.
+	locksMu  sync.Mutex
+	appLocks map[string]*sync.Mutex
 }
 
 // Open opens (creating if needed) the platform database at path.
@@ -101,7 +128,27 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, appLocks: map[string]*sync.Mutex{}}, nil
+}
+
+// LockApp acquires the per-app-id lock for appID, creating it on first use,
+// and returns an unlock function. Two calls for different app ids never
+// block each other. A caller that must choose between Deploy and Bootstrap
+// for appID (deciding by, e.g., whether the registry already has it) should
+// hold this lock across both the decision and the call, so a second
+// concurrent request for the same app id can never make that decision against
+// stale information — it waits, then re-decides once it has the lock.
+func (s *Store) LockApp(appID string) func() {
+	s.locksMu.Lock()
+	l, ok := s.appLocks[appID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.appLocks[appID] = l
+	}
+	s.locksMu.Unlock()
+
+	l.Lock()
+	return l.Unlock
 }
 
 func applyDDL(db *sql.DB) error {
@@ -175,6 +222,10 @@ func (s *Store) CreateJob(appID string, kind Kind, manifestVersion int) (*Job, e
 // detail is recorded as the job's diagnosable error message; it is only ever
 // meaningful when to is StateFailed.
 func (s *Store) Transition(jobID string, to State, detail string) (*Job, error) {
+	if s.failTransitionTo != "" && s.failTransitionTo == to {
+		s.failTransitionTo = ""
+		return nil, fmt.Errorf("injected test failure: transition to %s", to)
+	}
 	j, err := s.Get(jobID)
 	if err != nil {
 		return nil, err
@@ -276,6 +327,10 @@ func (s *Store) InFlightJobs() ([]*Job, error) {
 // by jobID at manifestVersion. This row is the source of truth boot
 // reconciliation reads to avoid darkening a previously-ready app.
 func (s *Store) PromoteActive(appID, jobID, assetDir string, manifestVersion int) error {
+	if s.failNextPromoteActive {
+		s.failNextPromoteActive = false
+		return errors.New("injected test failure: promote active build")
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO active_builds (app_id, job_id, asset_dir, manifest_version, updated_at)
 		 VALUES (?, ?, ?, ?, ?)

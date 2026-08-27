@@ -15,9 +15,11 @@ Beyond that core, the same binary also: **evolves** an app's schema to a new
 manifest version without losing data (the migration engine), **builds and
 activates** an app's pre-built frontend with a single rollback contract (build &
 deploy), serves each app's activated UI from the same origin as its API (static
-assets), generates a **typed TypeScript client** from a manifest, and runs an
-app's declared **sandboxed server-side functions** in a capability-checked
-WebAssembly sandbox.
+assets), and generates a **typed TypeScript client** from a manifest. It also
+contains a capability-checked WebAssembly **sandbox** for declared
+server-side functions — implemented and tested, but not yet invoked by any
+HTTP or MCP entry point in this binary; see "Sandboxed functions" below for
+what that means in practice today.
 
 The same binary also serves a **shell launcher** — a React SPA that is the host
 UI for the whole system. From the shell a user can browse, open, and manage every
@@ -60,7 +62,8 @@ schema/           manifest types + parser → schema model
 validate/         JSON-Schema structural + semantic checks (the hard gate)
 materialize/      schema → SQLite DDL
 store/            per-app SQLite connections, parameterized queries
-api/              generic CRUD + list handlers, query parser, error envelope
+domain/           transport-neutral runtime operations (create/get/list/update/delete), shared field coercion
+api/              thin net/http adapter over domain/: routing, query-string parsing, HTTP status mapping
 registry/         in-memory app registry, boot loader
 migrate/          schema diff → classify → witness → snapshot → execute
 build/            build & activation; second-deploy orchestration; platform DB
@@ -96,7 +99,7 @@ Then:
 make test                 # run the full test suite
 make build                # build bin/pocketknife + compile shell/ SPA
 make shell-build          # compile shell/ SPA only → shell/dist/
-make run                  # serve apps/ on :8080 (API-only, no shell)
+make run                  # serve apps/ on 127.0.0.1:8080 (API-only, no shell)
 make vet / make fmt       # go vet / go fmt
 ```
 
@@ -105,7 +108,7 @@ The binary has three modes. With no subcommand it **serves**; `migrate` and
 
 ```sh
 # serve (default): API + shell launcher + activated UIs over one origin
-./bin/pocketknife -addr :8080 -apps apps [-platform-db platform.db] [-shell-dist shell/dist] [-agent-bin ""] [-cors]
+./bin/pocketknife -apps apps [-addr 127.0.0.1:8080] [-platform-db platform.db] [-shell-dist shell/dist] [-agent-bin ""] [-cors]
 
 # migrate: evolve one app's schema to a new manifest version, no data loss
 ./bin/pocketknife migrate -app <id> -to <new_manifest.json> [-confirm] [-witnesses <file.json>]
@@ -115,10 +118,19 @@ The binary has three modes. With no subcommand it **serves**; `migrate` and
 ```
 
 On boot the server scans `apps/*/manifest.json`, validates each (skipping and
-logging any that fail), materializes each app's `data.db`, registers the schema,
-reconciles build state (failing any job interrupted by a restart and reattaching
-the active build per app), and serves. A restart re-derives the registry from
-disk and preserves all data.
+logging any that fail), materializes each app's `data.db`, verifies the
+resulting database actually matches the manifest (skipping, not silently
+serving, an app whose `data.db` predates a manifest change that was never
+migrated), registers the schema, reconciles build state (failing any job
+interrupted by a restart and reattaching the active build per app), and
+serves. A restart re-derives the registry from disk and preserves all data.
+
+**Trust model.** `-addr` defaults to `127.0.0.1:8080` — the Workbench v0.1
+runtime assumes a trusted local machine. Exposing the runtime to a network
+(e.g. `-addr :8080` to bind every interface) is an explicit configuration
+decision the operator has to make; stronger authentication for that case is
+out of scope for v0.1 — see the Platform API section below for what is and
+isn't authenticated today.
 
 `-shell-dist` sets the compiled shell directory (default `shell/dist`). If the
 directory is absent the shell routes return 503 — the API still works. `-agent-bin`
@@ -134,7 +146,7 @@ side by side so you get Vite's hot-module replacement:
 
 ```sh
 # Terminal 1: Go API with CORS enabled
-POCKETKNIFE_ADMIN_EMAIL=you@example.com POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -addr :8080 -apps apps
+POCKETKNIFE_ADMIN_EMAIL=you@example.com POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -apps apps
 
 # Terminal 2: Shell SPA dev server (proxies /platform/, /apps/, /ui/ → :8080)
 cd shell && npm install && npm run dev   # runs on http://localhost:3001
@@ -574,6 +586,16 @@ omitted), grid order auto-assigned — so it immediately appears in the shell
 launcher's home grid.
 
 ## Sandboxed functions (`sandbox/`, `broker/`, `consent/`)
+
+**Status: implemented and tested in isolation; not yet wired into any live
+entry point.** Everything below describes what the sandbox *enforces once a
+function is invoked* — but nothing in this binary currently invokes one: no
+HTTP route triggers `sandbox.Invoke`, `broker.New`/`NewHTTPCaller` is never
+constructed from the environment, and no example app under `apps/` declares
+a `functions` block. A future MCP transport (or a dedicated HTTP endpoint)
+is the natural place to wire this in; until then, treat this section as a
+description of a well-tested library, not of a running feature. See
+`docs/phase-4-wiring.md` for the tracked wiring gaps.
 
 A function's manifest entry only *declares* capabilities; `sandbox/` is the real
 boundary that *enforces* them. Each function body is treated as adversarial: it

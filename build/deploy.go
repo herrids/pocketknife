@@ -158,7 +158,13 @@ func Deploy(ctx context.Context, reg *registry.Registry, bst *Store, appID strin
 	}
 
 	if _, err := bst.Transition(job.ID, StateActivating, ""); err != nil {
-		return nil, fmt.Errorf("transition to activating: %w", err)
+		if kind == KindDeploy {
+			if rerr := rollback(); rerr != nil {
+				return fail(fmt.Errorf("transition to activating failed (%v); rollback ALSO failed: %w", err, rerr))
+			}
+			return fail(fmt.Errorf("transition to activating failed; the deploy was rolled back to the prior version: %w", err))
+		}
+		return fail(fmt.Errorf("transition to activating: %w", err))
 	}
 
 	// Activation cutover: the durable pointer (platform db) and the in-memory
@@ -177,7 +183,13 @@ func Deploy(ctx context.Context, reg *registry.Registry, bst *Store, appID strin
 	}
 	if finalAssetDir != "" {
 		if err := bst.PromoteActive(appID, job.ID, finalAssetDir, newApp.Version); err != nil {
-			return nil, fmt.Errorf("promote active build: %w", err)
+			if kind == KindDeploy {
+				if rerr := rollback(); rerr != nil {
+					return fail(fmt.Errorf("promote active build failed (%v); rollback ALSO failed: %w", err, rerr))
+				}
+				return fail(fmt.Errorf("promote active build failed; the deploy was rolled back to the prior version: %w", err))
+			}
+			return fail(fmt.Errorf("promote active build: %w", err))
 		}
 	}
 	reg.Register(&registry.RegisteredApp{Schema: ra.Schema, Store: ra.Store, Dir: ra.Dir, AssetDir: finalAssetDir})

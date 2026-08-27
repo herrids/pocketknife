@@ -3,6 +3,7 @@ package build
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,14 +19,32 @@ const (
 	MaxBundleBytes   = 200 << 20 // 200 MiB
 )
 
+// errBundleTooLarge signals that an entry's actual content exceeded its
+// remaining share of MaxBundleBytes. It is caught and reworded by
+// ExtractBundle; it never escapes this file.
+var errBundleTooLarge = errors.New("bundle exceeds byte limit")
+
 // ExtractBundle decompresses and extracts a gzipped tar stream into destDir.
 // Every entry's path is resolved and checked to stay strictly inside destDir
 // before anything is written: an entry using ".." or an absolute path is
 // rejected, and only regular files and directories are accepted -- a symlink,
-// hardlink, device file or anything else aborts the whole extraction. Total
-// extracted bytes and entry count are capped. No file is written outside
-// destDir under any input.
+// hardlink, device file or anything else aborts the whole extraction. Entry
+// count is capped against the tar headers; total extracted bytes is capped
+// against bytes actually written to disk (not a header's declared size, which
+// a crafted entry could understate) — writeBundleFile enforces this by never
+// copying more than its remaining share of the cap, regardless of what a
+// header claims. No file is written outside destDir under any input, and on
+// any failure destDir is removed rather than left holding a partial
+// extraction — every caller treats destDir as owned exclusively by this call.
 func ExtractBundle(r io.Reader, destDir string) error {
+	if err := extractBundle(r, destDir); err != nil {
+		_ = os.RemoveAll(destDir)
+		return err
+	}
+	return nil
+}
+
+func extractBundle(r io.Reader, destDir string) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("bundle is not gzip-compressed: %w", err)
@@ -65,11 +84,16 @@ func ExtractBundle(r io.Reader, destDir string) error {
 				return fmt.Errorf("create %q: %w", hdr.Name, err)
 			}
 		case tar.TypeReg:
-			totalBytes += hdr.Size
-			if totalBytes > MaxBundleBytes {
+			remaining := MaxBundleBytes - totalBytes
+			if remaining < 0 {
+				remaining = 0
+			}
+			n, err := writeBundleFile(target, tr, remaining)
+			totalBytes += n
+			if errors.Is(err, errBundleTooLarge) {
 				return fmt.Errorf("bundle exceeds %d bytes", MaxBundleBytes)
 			}
-			if err := writeBundleFile(target, tr); err != nil {
+			if err != nil {
 				return fmt.Errorf("write %q: %w", hdr.Name, err)
 			}
 		default:
@@ -79,19 +103,33 @@ func ExtractBundle(r io.Reader, destDir string) error {
 	return nil
 }
 
-func writeBundleFile(target string, r io.Reader) error {
+// writeBundleFile copies r into target, never writing more than maxBytes+1
+// bytes: enough to detect an overrun without buffering an unbounded amount of
+// attacker-controlled data first. It returns the number of bytes actually
+// written. If more than maxBytes bytes were available, it returns
+// errBundleTooLarge alongside the (maxBytes+1) bytes it did write — the
+// caller's cumulative total still reflects real bytes on disk, and
+// ExtractBundle removes the whole destination directory on any error.
+func writeBundleFile(target string, r io.Reader, maxBytes int64) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
+		return 0, err
 	}
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(out, r); err != nil {
+	n, err := io.CopyN(out, r, maxBytes+1)
+	if err != nil && err != io.EOF {
 		out.Close()
-		return err
+		return n, err
 	}
-	return out.Close()
+	if cerr := out.Close(); cerr != nil {
+		return n, cerr
+	}
+	if n > maxBytes {
+		return n, errBundleTooLarge
+	}
+	return n, nil
 }
 
 // safeJoin resolves name against base the way a tar extractor must: it

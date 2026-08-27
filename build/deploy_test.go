@@ -228,6 +228,134 @@ func TestDeploySecondDeployRollsBackOnInjectedFrontendFailure(t *testing.T) {
 	}
 }
 
+// TestDeploySecondDeployRollsBackOnInjectedActivatingTransitionFailure proves
+// the rollback gap fixed in Deploy: a failure transitioning the job to
+// StateActivating happens strictly after the data migration has committed
+// and the new frontend has been built, yet the deploy must still fully roll
+// back to the prior good version, exactly like an earlier-stage failure does.
+func TestDeploySecondDeployRollsBackOnInjectedActivatingTransitionFailure(t *testing.T) {
+	appsDir := t.TempDir()
+	reg := bootTestApp(t, appsDir, "notes", notesV1)
+	writeDist(t, appsDir, "notes", "frontend/dist", "v1")
+	bst := openTestStore(t)
+
+	if _, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV1), DeployOptions{}); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	ra1, _ := reg.App("notes")
+	oldAssetDir := ra1.AssetDir
+	id := insertNote(t, ra1, "hello")
+
+	writeDist(t, appsDir, "notes", "frontend/dist", "v2")
+	bst.failTransitionTo = StateActivating
+
+	res, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV2), DeployOptions{})
+	if err == nil {
+		t.Fatal("expected the deploy to fail")
+	}
+	if res.Job.State != StateFailed {
+		t.Fatalf("job state = %s, want failed", res.Job.State)
+	}
+
+	ra2, _ := reg.App("notes")
+	if ra2.Schema.Version != 1 {
+		t.Fatalf("schema version = %d, want rolled back to 1", ra2.Schema.Version)
+	}
+	if ra2.AssetDir != oldAssetDir {
+		t.Fatalf("asset dir = %q, want rolled back to %q", ra2.AssetDir, oldAssetDir)
+	}
+	if got := readMarker(t, ra2.AssetDir); got != "v1" {
+		t.Fatalf("served bundle after rollback = %q, want v1", got)
+	}
+
+	row, err := ra2.Store.GetByID(ra2.Schema.Entity("note"), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row == nil || row["title"] != "hello" {
+		t.Fatalf("data not preserved across rollback: %v", row)
+	}
+	if manifestOnDisk, err := os.ReadFile(filepath.Join(appsDir, "notes", "manifest.json")); err != nil || string(manifestOnDisk) != notesV1 {
+		t.Fatal("manifest.json on disk must be restored to the prior good version")
+	}
+
+	// The self-resetting injector already cleared itself; a retry must
+	// succeed cleanly.
+	res2, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV2), DeployOptions{})
+	if err != nil {
+		t.Fatalf("retry after rollback: %v", err)
+	}
+	if res2.Job.State != StateReady {
+		t.Fatalf("retry job state = %s, want ready", res2.Job.State)
+	}
+}
+
+// TestDeploySecondDeployRollsBackOnInjectedPromoteActiveFailure proves the
+// second rollback gap fixed in Deploy: PromoteActive runs even later than
+// the Activating transition (after it has already committed), and a failure
+// there must still trigger the full rollback contract, not a bare error that
+// leaves data/frontend/manifest state contradicting the reported job status.
+func TestDeploySecondDeployRollsBackOnInjectedPromoteActiveFailure(t *testing.T) {
+	appsDir := t.TempDir()
+	reg := bootTestApp(t, appsDir, "notes", notesV1)
+	writeDist(t, appsDir, "notes", "frontend/dist", "v1")
+	bst := openTestStore(t)
+
+	if _, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV1), DeployOptions{}); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+	ra1, _ := reg.App("notes")
+	oldAssetDir := ra1.AssetDir
+	id := insertNote(t, ra1, "hello")
+
+	writeDist(t, appsDir, "notes", "frontend/dist", "v2")
+	bst.failNextPromoteActive = true
+
+	res, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV2), DeployOptions{})
+	if err == nil {
+		t.Fatal("expected the deploy to fail")
+	}
+	if res.Job.State != StateFailed {
+		t.Fatalf("job state = %s, want failed", res.Job.State)
+	}
+
+	ra2, _ := reg.App("notes")
+	if ra2.Schema.Version != 1 {
+		t.Fatalf("schema version = %d, want rolled back to 1", ra2.Schema.Version)
+	}
+	if ra2.AssetDir != oldAssetDir {
+		t.Fatalf("asset dir = %q, want rolled back to %q", ra2.AssetDir, oldAssetDir)
+	}
+	if got := readMarker(t, ra2.AssetDir); got != "v1" {
+		t.Fatalf("served bundle after rollback = %q, want v1", got)
+	}
+
+	row, err := ra2.Store.GetByID(ra2.Schema.Entity("note"), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row == nil || row["title"] != "hello" {
+		t.Fatalf("data not preserved across rollback: %v", row)
+	}
+
+	// No active-build pointer was ever durably promoted for this failed job.
+	active, err := bst.ActiveBuildFor("notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active == nil || active.AssetDir != oldAssetDir {
+		t.Fatalf("active build pointer = %+v, want still pointing at the prior good asset dir %q", active, oldAssetDir)
+	}
+
+	res2, err := Deploy(context.Background(), reg, bst, "notes", []byte(notesV2), DeployOptions{})
+	if err != nil {
+		t.Fatalf("retry after rollback: %v", err)
+	}
+	if res2.Job.State != StateReady {
+		t.Fatalf("retry job state = %s, want ready", res2.Job.State)
+	}
+}
+
 func TestDeployIntentionalFrontendRemovalBecomesAPIOnly(t *testing.T) {
 	appsDir := t.TempDir()
 	reg := bootTestApp(t, appsDir, "notes", notesV1)

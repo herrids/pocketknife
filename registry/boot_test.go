@@ -161,6 +161,68 @@ func TestBootIsIdempotentOnUnchangedManifests(t *testing.T) {
 	}
 }
 
+// TestManifestDatabaseMismatchIsSkippedNotServed proves the boot-time
+// consistency check: if manifest.json is changed to add a field without ever
+// running a migration against the app's data.db (registry.Load never
+// migrates on an app's behalf — that's the CLI's/build's job), the app is
+// refused with a clear diagnostic and skipped, rather than silently served
+// against a database that no longer matches its schema. A sibling app must
+// still boot normally.
+func TestManifestDatabaseMismatchIsSkippedNotServed(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "reading_tracker", readingManifest)
+	writeManifest(t, root, "tasks", tasksManifest)
+
+	reg, results, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if !r.OK {
+			t.Fatalf("initial boot: app %s failed: %v %v", r.ManifestPath, r.Errors, r.Err)
+		}
+	}
+	reg.Close()
+
+	// Hand-edit reading_tracker's manifest to add a field, without running a
+	// migration — the exact scenario the check exists to catch.
+	const mismatched = `{
+      "app": { "id": "reading_tracker", "name": "Reading Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_book", "name": "book", "fields": [
+          { "id": "fld_title", "name": "title", "type": "text", "required": true, "max": 200 },
+          { "id": "fld_author", "name": "author", "type": "text" }
+        ]}
+      ]
+    }`
+	writeManifest(t, root, "reading_tracker", mismatched)
+
+	reg2, results2, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg2.Close()
+
+	var mismatchResult *registry.LoadResult
+	for i := range results2 {
+		if filepath.Base(filepath.Dir(results2[i].ManifestPath)) == "reading_tracker" {
+			mismatchResult = &results2[i]
+		}
+	}
+	if mismatchResult == nil || mismatchResult.OK {
+		t.Fatal("a manifest/database mismatch must not boot OK")
+	}
+	if mismatchResult.Err == nil {
+		t.Fatal("expected a clear diagnostic error for the mismatch")
+	}
+	if _, ok := reg2.App("reading_tracker"); ok {
+		t.Fatal("a mismatched app must never be registered/served")
+	}
+	if _, ok := reg2.App("tasks"); !ok {
+		t.Fatal("a sibling mismatched app must not stop an unaffected one from booting")
+	}
+}
+
 func TestInvalidManifestIsSkippedNotServed(t *testing.T) {
 	root := t.TempDir()
 	writeManifest(t, root, "good", readingManifest)

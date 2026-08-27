@@ -27,10 +27,12 @@ type LoadResult struct {
 // schema. An invalid or unprocessable manifest is recorded in the returned
 // results and skipped — never served — but does not stop the others.
 //
-// Load is the natural seam for a future migration engine: between materialize
-// and register, a migrate(stored, new) step would reconcile a changed manifest
-// against an existing data.db. v1 assumes manifest and data.db are consistent
-// and only ever runs idempotent CREATE statements.
+// After materializing, Load verifies the resulting database actually matches
+// the manifest (Store.VerifySchema) — CREATE TABLE IF NOT EXISTS is a no-op
+// against an existing, differently-shaped table, so an app whose manifest.json
+// changed without ever being migrated is detected and skipped here, rather
+// than silently served against a schema its database no longer has. This is
+// detection only: Load never migrates data on an app's behalf.
 func Load(appsDir string) (*Registry, []LoadResult, error) {
 	matches, err := filepath.Glob(filepath.Join(appsDir, "*", "manifest.json"))
 	if err != nil {
@@ -80,7 +82,12 @@ func Load(appsDir string) (*Registry, []LoadResult, error) {
 			continue
 		}
 
-		// Seam: migrate(storedManifest, app) would go here before serving.
+		if err := st.VerifySchema(app); err != nil {
+			st.Close()
+			res.Err = fmt.Errorf("manifest/database consistency check failed: %w", err)
+			results = append(results, res)
+			continue
+		}
 
 		reg.Register(&RegisteredApp{Schema: app, Store: st, Dir: dir})
 		res.OK = true

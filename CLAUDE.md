@@ -30,7 +30,7 @@ Go must be on PATH. If absent (Homebrew is unavailable on this machine — see g
 
 ```sh
 # Terminal 1: Go API with CORS enabled
-POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -addr :8080 -apps apps
+POCKETKNIFE_ADMIN_PASSWORD=mypassword ./bin/pocketknife -cors -apps apps
 
 # Terminal 2: Shell SPA dev server (proxies /platform/, /apps/, /ui/ → :8080)
 cd shell && npm install && npm run dev   # runs on http://localhost:3001
@@ -43,7 +43,7 @@ the shell SPA.
 ### The binary's three modes (`cmd/pocketknife/main.go`)
 
 ```sh
-./bin/pocketknife -addr :8080 -apps apps [-cors] [-platform-db platform.db]   # serve (default, no subcommand)
+./bin/pocketknife -apps apps [-addr 127.0.0.1:8080] [-cors] [-platform-db platform.db]   # serve (default, no subcommand); -addr defaults to localhost-only
 ./bin/pocketknife migrate -app <id> -to <new.json> [-confirm] [-witnesses w.json]  # evolve schema, no data loss
 ./bin/pocketknife build   -app <id> [-to <new.json>] [-confirm] [-witnesses w.json] # rebuild/activate frontend, or full second deploy
 ```
@@ -54,7 +54,9 @@ The non-negotiable invariants (stable IDs as the spine, one SQLite file per app,
 
 ### Request/boot path (the v1 core)
 
-`schema/` (manifest types + parser → schema model) → `validate/` (JSON-Schema structural + semantic checks; the hard gate) → `materialize/` (schema → idempotent SQLite DDL) → `store/` (per-app connections, parameterized queries, stable-id-keyed columns) → `api/` (one generic CRUD/list handler set, query parser, error envelope) → `registry/` (in-memory app registry; `registry.Load` rebuilds it from disk on every boot). The manifest's canonical JSON Schema is `manifest.schema.json`, embedded into the binary via `schema_embed.go`.
+`schema/` (manifest types + parser → schema model) → `validate/` (JSON-Schema structural + semantic checks; the hard gate) → `materialize/` (schema → idempotent SQLite DDL) → `store/` (per-app connections, parameterized queries, stable-id-keyed columns; `Store.VerifySchema` is the boot-time guard against a manifest and its `data.db` having silently diverged) → `registry/` (in-memory app registry; `registry.Load` rebuilds it from disk on every boot, calling `VerifySchema` after materializing and skipping — never serving — a mismatched app). The manifest's canonical JSON Schema is `manifest.schema.json`, embedded into the binary via `schema_embed.go`.
+
+`domain/` is the transport-neutral runtime-operations layer every CRUD surface reduces to: `Create/Get/List/Update/Delete` resolve the app/entity through the registry, enforce the entity's declared operations, run the shared field-coercion rules (`domain.CoerceFieldValue` — the one place text/integer/real/boolean/datetime/enum/reference validation lives; `api/` and `sandbox/` both call it rather than each reimplementing it), and call the store, returning a structured `*domain.OpError` any transport maps to its own wire shape. `api/` is a thin `net/http` adapter over `domain` (one generic CRUD/list handler set, query-string parsing, HTTP status/error-code mapping); this is the seam a future MCP transport would use to call the same operations without going through HTTP.
 
 ### Migration engine (`migrate/`)
 

@@ -5,10 +5,12 @@
 // It introduces exactly one new capability the rest of the runtime lacked:
 // bootstrapping a brand-new app id that the registry has never seen
 // (build.Bootstrap); an already-known app id is redeployed through the
-// existing build.Deploy. The endpoint is idempotent on the caller's job id
-// and serializes concurrent requests for the same app id, but does not
-// authenticate its caller -- that is a deliberate, separately-tracked gap,
-// not an oversight.
+// existing build.Deploy. The endpoint is idempotent on the caller's job id;
+// concurrent requests for the same app id are serialized by build.Store
+// itself (shared by every in-process caller, not just this one), so this
+// package carries no locking of its own. The endpoint does not authenticate
+// its caller -- that is a deliberate, separately-tracked gap, not an
+// oversight.
 package deployapi
 
 import (
@@ -21,7 +23,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"pocketknife/build"
 	"pocketknife/registry"
@@ -35,34 +36,20 @@ const (
 )
 
 // Server is the POST /deploy handler's state: the live registry and platform
-// build-job store it deploys into, the apps directory new apps are created
-// under, and a per-app-id lock so two requests for the same app never race.
+// build-job store it deploys into, and the apps directory new apps are
+// created under.
 type Server struct {
 	reg     *registry.Registry
 	bst     *build.Store
 	appsDir string
-
-	mu       sync.Mutex
-	appLocks map[string]*sync.Mutex
 }
 
 // NewServer returns an http.Handler serving POST /deploy against reg and bst.
 func NewServer(reg *registry.Registry, bst *build.Store, appsDir string) http.Handler {
-	s := &Server{reg: reg, bst: bst, appsDir: appsDir, appLocks: map[string]*sync.Mutex{}}
+	s := &Server{reg: reg, bst: bst, appsDir: appsDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /deploy", s.handleDeploy)
 	return mux
-}
-
-func (s *Server) lockFor(appID string) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	l, ok := s.appLocks[appID]
-	if !ok {
-		l = &sync.Mutex{}
-		s.appLocks[appID] = l
-	}
-	return l
 }
 
 type response struct {
@@ -104,9 +91,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lock := s.lockFor(app.ID)
-	lock.Lock()
-	defer lock.Unlock()
+	// Held across both the redeploy-vs-firstInstall decision and the call
+	// itself: a second concurrent request for the same app id waits here,
+	// then re-decides once it has the lock, rather than deciding against
+	// information that's already gone stale (see build.Store.LockApp).
+	unlock := s.bst.LockApp(app.ID)
+	defer unlock()
 
 	if ra, ok := s.reg.App(app.ID); ok {
 		err = s.redeploy(ra, app.Frontend.Dist, manifestBytes, req.Bundle, req.Source)

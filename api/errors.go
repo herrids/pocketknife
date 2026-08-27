@@ -16,12 +16,6 @@ type errorEnvelope struct {
 	Error apiError `json:"error"`
 }
 
-// fieldIssue is one body-validation problem, used in the details array.
-type fieldIssue struct {
-	Field   string `json:"field"`
-	Message string `json:"message"`
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

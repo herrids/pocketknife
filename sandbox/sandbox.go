@@ -5,6 +5,9 @@
 // no environment, no raw network, and no notion of any other invocation's
 // state, behind a fixed, capability-checked host ABI that is the only way out
 // of the WebAssembly module wazero runs it in.
+//
+// Status: implemented and tested in isolation; not yet invoked by any
+// HTTP or MCP entry point in this binary. See docs/phase-4-wiring.md.
 package sandbox
 
 import (

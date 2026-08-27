@@ -200,6 +200,159 @@ func TestApplyRestoresOnExecutionFailure(t *testing.T) {
 	}
 }
 
+// TestApplyRequiredFieldWithBackfillWitnessEndToEnd exercises the one witness
+// shape not otherwise covered at the Apply level: adding a required field
+// with no default over existing rows, supplying a WitnessBackfill, and
+// verifying every pre-existing row ends up holding the exact backfilled
+// value after Apply succeeds.
+func TestApplyRequiredFieldWithBackfillWitnessEndToEnd(t *testing.T) {
+	reg, _ := setupReg(t, "tracker", applyV1)
+	id1 := seedReg(t, reg, "tracker", "item", map[string]any{"title": "keep one", "count": int64(1)})
+	id2 := seedReg(t, reg, "tracker", "item", map[string]any{"title": "keep two", "count": int64(2)})
+
+	const v2 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "title", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" },
+          { "id": "fld_category", "name": "category", "type": "text", "required": true }
+        ]}
+      ]
+    }`
+
+	// Without a witness, a required-with-no-default add is refused even with
+	// -confirm.
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v2), Options{Confirm: true}); err == nil {
+		t.Fatal("adding a required field with no default and no witness must be refused")
+	}
+	ra, _ := reg.App("tracker")
+	if ra.Schema.Version != 1 {
+		t.Fatal("refused migration must leave the prior schema registered")
+	}
+
+	res, err := Apply(context.Background(), reg, "tracker", []byte(v2), Options{
+		Confirm: true,
+		Witnesses: map[string]*Witness{
+			"fld_category": {Kind: WitnessBackfill, Backfill: "uncategorized"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply with backfill witness: %v", err)
+	}
+	if res.NoChange {
+		t.Fatal("adding a field is a real change")
+	}
+
+	ra, _ = reg.App("tracker")
+	if ra.Schema.Version != 2 || ra.Schema.Entity("item").Field("category") == nil {
+		t.Fatal("registry not updated to the new schema")
+	}
+
+	for _, id := range []string{id1, id2} {
+		row, err := ra.Store.GetByID(ra.Schema.Entity("item"), id)
+		if err != nil {
+			t.Fatalf("read row %s: %v", id, err)
+		}
+		if row["category"] != "uncategorized" {
+			t.Fatalf("row %s category = %v, want backfilled %q", id, row["category"], "uncategorized")
+		}
+		// The rest of the row survived untouched.
+		if row["title"] == nil {
+			t.Fatalf("row %s lost its title across the migration: %v", id, row)
+		}
+	}
+}
+
+// TestVerifySchemaMatchesAfterEveryMigrationShape is the load-bearing check
+// behind store.VerifySchema's exact-match design (boot-time manifest/database
+// consistency, see registry.Load): it drives an app through a rename, a safe
+// add, a destructive add-with-backfill, and a destructive drop — the native
+// ADD/DROP path and the table-rebuild path both — and asserts VerifySchema
+// reports no mismatch after each, on the exact schema Apply leaves registered.
+// A false positive here would mean materialize's and migrate's column
+// conventions have diverged, which is exactly the class of bug this test
+// exists to catch before VerifySchema's boot-time hard-fail is trusted.
+func TestVerifySchemaMatchesAfterEveryMigrationShape(t *testing.T) {
+	reg, _ := setupReg(t, "tracker", applyV1)
+	seedReg(t, reg, "tracker", "item", map[string]any{"title": "keep", "count": int64(1)})
+
+	verify := func(t *testing.T) {
+		t.Helper()
+		ra, _ := reg.App("tracker")
+		if err := ra.Store.VerifySchema(ra.Schema); err != nil {
+			t.Fatalf("VerifySchema false positive after migration: %v", err)
+		}
+	}
+	verify(t) // fresh materialize, before any migration
+
+	// Rename (title -> heading): zero SQL, but must still verify.
+	const v2 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "heading", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v2), Options{}); err != nil {
+		t.Fatalf("rename apply: %v", err)
+	}
+	verify(t)
+
+	// Safe add (native ALTER TABLE ADD COLUMN).
+	const v3 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 3 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "heading", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" },
+          { "id": "fld_note", "name": "note", "type": "text" }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v3), Options{}); err != nil {
+		t.Fatalf("safe add apply: %v", err)
+	}
+	verify(t)
+
+	// Destructive add with a backfill witness (table rebuild).
+	const v4 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 4 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "heading", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" },
+          { "id": "fld_note", "name": "note", "type": "text" },
+          { "id": "fld_category", "name": "category", "type": "text", "required": true }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v4), Options{
+		Confirm:   true,
+		Witnesses: map[string]*Witness{"fld_category": {Kind: WitnessBackfill, Backfill: "none"}},
+	}); err != nil {
+		t.Fatalf("backfill apply: %v", err)
+	}
+	verify(t)
+
+	// Destructive drop (native ALTER TABLE DROP COLUMN).
+	const v5 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 5 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "heading", "type": "text", "required": true },
+          { "id": "fld_category", "name": "category", "type": "text", "required": true }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v5), Options{Confirm: true}); err != nil {
+		t.Fatalf("drop apply: %v", err)
+	}
+	verify(t)
+}
+
 func TestApplyNoChange(t *testing.T) {
 	reg, _ := setupReg(t, "tracker", applyV1)
 	res, err := Apply(context.Background(), reg, "tracker", []byte(applyV1), Options{})

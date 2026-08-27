@@ -133,6 +133,103 @@ func (s *Store) ApplyDDL(stmts []string) error {
 	return nil
 }
 
+// VerifySchema reports a descriptive error if the on-disk database does not
+// exactly match what materialize.Statements would produce for app: every
+// entity must have a table, and that table's physical column set (the
+// platform columns plus one column per declared field, keyed by the field's
+// stable id — the same convention materialize.TableDDL and migrate/execute.go
+// both use) must match exactly, with nothing missing and nothing extra.
+//
+// This is detection only: it never alters the database. It exists because
+// ApplyDDL's CREATE TABLE IF NOT EXISTS is a true no-op against a table that
+// already exists with a different shape — if a manifest changes without a
+// migration ever running against its data.db, boot would otherwise serve a
+// schema the database no longer actually has. Call this after ApplyDDL, not
+// instead of it.
+func (s *Store) VerifySchema(app *schema.App) error {
+	var problems []string
+	for _, ent := range app.Entities {
+		actual, err := s.tableColumns(ent.ID)
+		if err != nil {
+			return fmt.Errorf("verify schema: read columns for %s: %w", ent.ID, err)
+		}
+		if actual == nil {
+			problems = append(problems, fmt.Sprintf("entity %q (%s): table is missing", ent.Name, ent.ID))
+			continue
+		}
+		missing, extra := diffColumnSets(expectedPhysicalColumns(ent), actual)
+		if len(missing) > 0 || len(extra) > 0 {
+			problems = append(problems, fmt.Sprintf(
+				"entity %q (%s): column mismatch (missing=%v extra=%v)",
+				ent.Name, ent.ID, missing, extra))
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("manifest does not match the on-disk database:\n  %s", strings.Join(problems, "\n  "))
+	}
+	return nil
+}
+
+// tableColumns returns tableName's physical column names, or nil if the table
+// does not exist (SQLite's PRAGMA table_info returns zero rows, not an error,
+// for an unknown table — a real table always has at least the "id" column).
+func (s *Store) tableColumns(tableName string) ([]string, error) {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s);", tableName))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cols []string
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		cols = append(cols, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return cols, nil
+}
+
+// expectedPhysicalColumns is the physical column set materialize.Statements
+// produces for ent.
+func expectedPhysicalColumns(ent *schema.Entity) []string {
+	cols := make([]string, 0, len(ent.Fields)+3)
+	cols = append(cols, "id", "created_at", "updated_at")
+	for _, f := range ent.Fields {
+		cols = append(cols, f.ID)
+	}
+	return cols
+}
+
+// diffColumnSets compares two column-name sets order-independently.
+func diffColumnSets(expected, actual []string) (missing, extra []string) {
+	expSet := make(map[string]bool, len(expected))
+	for _, c := range expected {
+		expSet[c] = true
+	}
+	actSet := make(map[string]bool, len(actual))
+	for _, c := range actual {
+		actSet[c] = true
+	}
+	for _, c := range expected {
+		if !actSet[c] {
+			missing = append(missing, c)
+		}
+	}
+	for _, c := range actual {
+		if !expSet[c] {
+			extra = append(extra, c)
+		}
+	}
+	return missing, extra
+}
+
 // RunMigration executes fn within the SQLite scaffold documented for changing a
 // table's schema by rebuild. Foreign-key enforcement is disabled on a single
 // pinned connection (it cannot be toggled inside a transaction), a transaction is

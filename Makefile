@@ -4,7 +4,7 @@
 # run: export PATH="$$HOME/.local/go/bin:$$PATH"
 
 GO ?= go
-ADDR ?= :8080
+ADDR ?= 127.0.0.1:8080
 APPS ?= apps
 
 SHELL_DIR ?= shell
