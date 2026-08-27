@@ -1,0 +1,10 @@
+{
+  "app": { "id": "applog", "name": "AppLog", "version": 3 },
+  "entities": [
+    { "id": "ent_entry", "name": "entry", "operations": ["create", "read"], "fields": [
+      { "id": "fld_message", "name": "message", "type": "text", "required": true },
+      { "id": "fld_source", "name": "source", "type": "text" },
+      { "id": "fld_count", "name": "count", "type": "integer", "default": 1 }
+    ]}
+  ]
+}

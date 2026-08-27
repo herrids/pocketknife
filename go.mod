@@ -6,6 +6,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/tetratelabs/wazero v1.12.0
 	modernc.org/sqlite v1.53.0
+	pgregory.net/rapid v1.3.0
 )
 
 require (

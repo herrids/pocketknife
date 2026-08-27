@@ -1,0 +1,10 @@
+{
+  "app": { "id": "golden", "name": "Golden", "version": 1 },
+  "entities": [
+    { "id": "ent_thing", "name": "thing", "fields": [
+      { "id": "fld_label", "name": "label", "type": "text", "required": true, "unique": true },
+      { "id": "fld_qty", "name": "qty", "type": "integer", "default": 0 },
+      { "id": "fld_status", "name": "status", "type": "enum", "values": ["open", "closed"], "default": "open" }
+    ]}
+  ]
+}

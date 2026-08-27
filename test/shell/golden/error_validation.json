@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "validation_failed",
+    "details": [
+      {
+        "field": "label",
+        "message": "is required"
+      }
+    ],
+    "message": "request body failed validation"
+  }
+}

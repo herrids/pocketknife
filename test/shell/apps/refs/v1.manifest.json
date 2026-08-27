@@ -1,0 +1,20 @@
+{
+  "app": { "id": "refs", "name": "Refs", "version": 1 },
+  "entities": [
+    { "id": "ent_parent", "name": "parent", "fields": [
+      { "id": "fld_label", "name": "label", "type": "text", "required": true }
+    ]},
+    { "id": "ent_casc", "name": "casc", "fields": [
+      { "id": "fld_casc_name", "name": "name", "type": "text", "required": true },
+      { "id": "fld_casc_ref", "name": "parent", "type": "reference", "target": "ent_parent", "onDelete": "cascade" }
+    ]},
+    { "id": "ent_rstr", "name": "rstr", "fields": [
+      { "id": "fld_rstr_name", "name": "name", "type": "text", "required": true },
+      { "id": "fld_rstr_ref", "name": "parent", "type": "reference", "target": "ent_parent", "onDelete": "restrict" }
+    ]},
+    { "id": "ent_snul", "name": "snul", "fields": [
+      { "id": "fld_snul_name", "name": "name", "type": "text", "required": true },
+      { "id": "fld_snul_ref", "name": "parent", "type": "reference", "target": "ent_parent", "onDelete": "set_null" }
+    ]}
+  ]
+}

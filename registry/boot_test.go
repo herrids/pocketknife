@@ -161,6 +161,65 @@ func TestBootIsIdempotentOnUnchangedManifests(t *testing.T) {
 	}
 }
 
+// TestBootDoesNotReconcileDriftedManifest pins the documented seam in boot.go:
+// "Load is the natural seam for a future migration engine... v1 assumes manifest
+// and data.db are consistent and only ever runs idempotent CREATE statements." If
+// a manifest is hand-edited out-of-band to add a field, Load happily registers the
+// new schema (CREATE TABLE IF NOT EXISTS is a no-op on the existing table) without
+// ever reconciling the physical table to match -- so the new field is exposed by
+// the registry/API but the underlying column does not exist. This is a real,
+// intentional v1 boundary (migration is the only sanctioned path to evolve a
+// schema), not a defect; it is pinned here so admitting any other path to mutate
+// manifest.json in place is a deliberate decision with a known consequence.
+func TestBootDoesNotReconcileDriftedManifest(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "reading_tracker", readingManifest)
+
+	reg, _, err := registry.Load(root)
+	if err != nil {
+		t.Fatalf("first boot: %v", err)
+	}
+	ra, _ := reg.App("reading_tracker")
+	bookID := insertRow(t, ra, "book", map[string]any{"title": "Pre-drift"})
+	reg.Close()
+
+	// Drift: hand-edit the manifest to add a field, bypassing the migration
+	// engine entirely (no ALTER TABLE is ever issued for this).
+	driftedManifest := `{
+	  "app": { "id": "reading_tracker", "name": "Reading Tracker", "version": 2 },
+	  "entities": [
+	    { "id": "ent_book", "name": "book", "fields": [
+	      { "id": "fld_title", "name": "title", "type": "text", "required": true, "max": 200 },
+	      { "id": "fld_author", "name": "author", "type": "text" }
+	    ]}
+	  ]
+	}`
+	writeManifest(t, root, "reading_tracker", driftedManifest)
+
+	reg2, results, err := registry.Load(root)
+	if err != nil {
+		t.Fatalf("re-boot on drifted manifest: %v", err)
+	}
+	defer reg2.Close()
+	for _, r := range results {
+		if !r.OK {
+			t.Fatalf("drifted manifest should still validate and register: %v %v", r.Errors, r.Err)
+		}
+	}
+
+	ra2, _ := reg2.App("reading_tracker")
+	if ra2.Schema.Version != 2 || ra2.Schema.Entity("book").Field("author") == nil {
+		t.Fatal("registry did not pick up the drifted manifest's new field")
+	}
+
+	// The registry believes "author" exists, but no DDL ever added the column: a
+	// read of a pre-drift row must fail at the store level, not silently succeed.
+	if _, err := ra2.Store.GetByID(ra2.Schema.Entity("book"), bookID); err == nil {
+		t.Fatal("expected a read against the drifted (never-migrated) schema to fail -- " +
+			"the physical table was never reconciled to the new manifest")
+	}
+}
+
 func TestInvalidManifestIsSkippedNotServed(t *testing.T) {
 	root := t.TempDir()
 	writeManifest(t, root, "good", readingManifest)
