@@ -110,6 +110,16 @@ type Store struct {
 	// runtime, not something an in-memory mutex can address.
 	locksMu  sync.Mutex
 	appLocks map[string]*sync.Mutex
+
+	// testHoldLock, if set, is called synchronously by LockApp immediately
+	// after it acquires appID's lock, before returning to the caller. It is
+	// test-only (always nil in production) and exists so a concurrency test
+	// can deterministically widen the critical section — block a first
+	// caller inside it until signaled — and thereby prove a second
+	// concurrent caller for the same app id is genuinely blocked, without
+	// relying on a wall-clock head start that scheduling jitter (especially
+	// under -race, which adds significant overhead) can make unreliable.
+	testHoldLock func(appID string)
 }
 
 // Open opens (creating if needed) the platform database at path.
@@ -148,6 +158,9 @@ func (s *Store) LockApp(appID string) func() {
 	s.locksMu.Unlock()
 
 	l.Lock()
+	if s.testHoldLock != nil {
+		s.testHoldLock(appID)
+	}
 	return l.Unlock
 }
 

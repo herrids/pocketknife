@@ -1,28 +1,20 @@
 // Package deployapi is the ingest side of the agent-to-backend wire: it
 // receives an approved app -- a manifest plus its already-built frontend
 // bundle, keyed on the agent's job id -- and lands it as a live, reachable
-// app through the existing validate/materialize/build/registry machinery.
-// It introduces exactly one new capability the rest of the runtime lacked:
-// bootstrapping a brand-new app id that the registry has never seen
-// (build.Bootstrap); an already-known app id is redeployed through the
-// existing build.Deploy. The endpoint is idempotent on the caller's job id;
-// concurrent requests for the same app id are serialized by build.Store
-// itself (shared by every in-process caller, not just this one), so this
-// package carries no locking of its own. The endpoint does not authenticate
-// its caller -- that is a deliberate, separately-tracked gap, not an
-// oversight.
+// app through the existing validate/materialize/build/registry machinery,
+// via the one safe public operation for that, build.ApplyDeployment. It
+// never decides Bootstrap-vs-Deploy itself and carries no locking of its
+// own -- ApplyDeployment owns both, shared with every other in-process
+// caller. The endpoint is idempotent on the caller's job id. It does not
+// authenticate its caller -- that is a deliberate, separately-tracked gap,
+// not an oversight.
 package deployapi
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
-	"mime/multipart"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"pocketknife/build"
 	"pocketknife/registry"
@@ -91,21 +83,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Held across both the redeploy-vs-firstInstall decision and the call
-	// itself: a second concurrent request for the same app id waits here,
-	// then re-decides once it has the lock, rather than deciding against
-	// information that's already gone stale (see build.Store.LockApp).
-	unlock := s.bst.LockApp(app.ID)
-	defer unlock()
-
-	if ra, ok := s.reg.App(app.ID); ok {
-		err = s.redeploy(ra, app.Frontend.Dist, manifestBytes, req.Bundle, req.Source)
-	} else {
-		err = s.firstInstall(app.ID, manifestBytes, req.Bundle, req.Source)
-	}
+	// ApplyDeployment owns the per-app lock and the Bootstrap-vs-Deploy
+	// decision atomically; this package never makes that decision itself.
+	res, err := build.ApplyDeployment(context.Background(), s.reg, s.bst, s.appsDir, manifestBytes, req.Bundle, build.DeployOptions{})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "deploy_failed", err.Error())
 		return
+	}
+	if req.Source != nil && res.Job != nil {
+		if ra, ok := s.reg.App(app.ID); ok {
+			_ = build.StoreSource(ra.Dir, res.Job.ID, req.Source)
+		}
 	}
 
 	url := "/ui/" + app.ID + "/"
@@ -126,41 +114,6 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, response{AppID: app.ID, Version: app.Version, JobID: req.JobID, URL: url})
-}
-
-// firstInstall routes an unknown app id through build.Bootstrap, which owns
-// staging, materializing and registering the brand-new app. If source is
-// non-nil it is stored as an opaque artifact keyed on the resulting job id.
-func (s *Server) firstInstall(appID string, manifestBytes []byte, bundle io.Reader, source multipart.File) error {
-	res, err := build.Bootstrap(s.reg, s.bst, s.appsDir, manifestBytes, bundle)
-	if err != nil || source == nil || res == nil || res.Job == nil {
-		return err
-	}
-	// Bootstrap registered the app; resolve its dir from the live registry.
-	if ra, ok := s.reg.App(appID); ok {
-		_ = build.StoreSource(ra.Dir, res.Job.ID, source)
-	}
-	return nil
-}
-
-// redeploy writes the new bundle into the already-registered app's directory
-// and routes the deploy through build.Deploy, which decides install-vs-data-
-// migration by manifest version and owns the single rollback contract. If
-// source is non-nil it is stored after a successful deploy.
-func (s *Server) redeploy(ra *registry.RegisteredApp, distRel string, manifestBytes []byte, bundle io.Reader, source multipart.File) error {
-	distDir := filepath.Join(ra.Dir, distRel)
-	if err := os.RemoveAll(distDir); err != nil {
-		return fmt.Errorf("clear previous bundle: %w", err)
-	}
-	if err := build.ExtractBundle(bundle, distDir); err != nil {
-		return fmt.Errorf("extract frontend bundle: %w", err)
-	}
-	res, err := build.Deploy(context.Background(), s.reg, s.bst, ra.Schema.ID, manifestBytes, build.DeployOptions{})
-	if err != nil || source == nil || res == nil || res.Job == nil {
-		return err
-	}
-	_ = build.StoreSource(ra.Dir, res.Job.ID, source)
-	return nil
 }
 
 // The error envelope mirrors the rest of the server's shape

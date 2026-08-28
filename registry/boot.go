@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"pocketknife/materialize"
+	"pocketknife/schema"
 	"pocketknife/store"
 	"pocketknife/validate"
 )
@@ -27,12 +28,28 @@ type LoadResult struct {
 // schema. An invalid or unprocessable manifest is recorded in the returned
 // results and skipped — never served — but does not stop the others.
 //
-// After materializing, Load verifies the resulting database actually matches
-// the manifest (Store.VerifySchema) — CREATE TABLE IF NOT EXISTS is a no-op
-// against an existing, differently-shaped table, so an app whose manifest.json
-// changed without ever being migrated is detected and skipped here, rather
-// than silently served against a schema its database no longer has. This is
-// detection only: Load never migrates data on an app's behalf.
+// After materializing, Load runs two independent consistency checks before
+// ever registering an app. Store.VerifySchema catches a database whose
+// actual columns don't match the manifest's declared fields — CREATE TABLE
+// IF NOT EXISTS is a no-op against an existing, differently-shaped table, so
+// this is the only thing standing between a stale data.db and an app being
+// served against a schema it no longer has. VerifySchema only compares
+// column names, though: it can't see a constraint-only change (required,
+// unique, a reference's target/onDelete, an enum's value set, a min/max
+// bound) where the columns themselves haven't changed. schema.Fingerprint
+// closes that gap — a deterministic digest of exactly the parts of the
+// manifest that determine materialized schema semantics, compared against
+// the fingerprint last recorded after a schema change actually succeeded
+// (Store.AppliedFingerprint/SetAppliedFingerprint, kept inside the app's own
+// data.db so a migration rollback restores the old fingerprint for free).
+// An app with no recorded fingerprint yet — brand new, or predating this
+// mechanism — adopts the manifest's fingerprint as its baseline, but only
+// once VerifySchema has already shown the database's columns are consistent
+// with it; a legacy app that was already constraint-mismatched at the
+// moment of upgrading past this point stays undetected for that one
+// transition, a documented, accepted limitation of adopting the mechanism
+// after the fact. Both checks are detection only: Load never migrates data
+// or rewrites a manifest on an app's behalf.
 func Load(appsDir string) (*Registry, []LoadResult, error) {
 	matches, err := filepath.Glob(filepath.Join(appsDir, "*", "manifest.json"))
 	if err != nil {
@@ -89,10 +106,39 @@ func Load(appsDir string) (*Registry, []LoadResult, error) {
 			continue
 		}
 
+		if err := checkSchemaFingerprint(st, app); err != nil {
+			st.Close()
+			res.Err = fmt.Errorf("manifest/database consistency check failed: %w", err)
+			results = append(results, res)
+			continue
+		}
+
 		reg.Register(&RegisteredApp{Schema: app, Store: st, Dir: dir})
 		res.OK = true
 		results = append(results, res)
 	}
 
 	return reg, results, nil
+}
+
+// checkSchemaFingerprint enforces that app's current schema fingerprint
+// matches the one last recorded after a schema change actually succeeded.
+// If none has ever been recorded (a brand-new app whose fresh materialize
+// just ran above, or a legacy app predating this mechanism), it adopts the
+// manifest's fingerprint as the baseline — safe to do here specifically
+// because the caller has already run VerifySchema first and found the
+// database's columns consistent with app.
+func checkSchemaFingerprint(st *store.Store, app *schema.App) error {
+	fp := schema.Fingerprint(app)
+	applied, ok, err := st.AppliedFingerprint()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return st.SetAppliedFingerprint(fp)
+	}
+	if applied != fp {
+		return fmt.Errorf("schema fingerprint mismatch: the manifest changed without a successful migration ever being applied to this app's database (applied=%s, manifest=%s)", applied, fp)
+	}
+	return nil
 }

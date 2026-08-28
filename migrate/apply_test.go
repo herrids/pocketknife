@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pocketknife/registry"
+	"pocketknife/schema"
 	"pocketknife/store"
 )
 
@@ -351,6 +352,131 @@ func TestVerifySchemaMatchesAfterEveryMigrationShape(t *testing.T) {
 		t.Fatalf("drop apply: %v", err)
 	}
 	verify(t)
+}
+
+// TestApplySafeMigrationAdvancesSchemaFingerprint proves a successful
+// migration's schema fingerprint is updated atomically with the schema
+// change itself (migrate/execute.go's store.WriteAppliedFingerprintTx, run
+// inside the same transaction as the DDL/DML).
+func TestApplySafeMigrationAdvancesSchemaFingerprint(t *testing.T) {
+	reg, _ := setupReg(t, "tracker", applyV1)
+	ra, _ := reg.App("tracker")
+
+	before, ok, err := ra.Store.AppliedFingerprint()
+	if err != nil || !ok {
+		t.Fatalf("expected a baseline fingerprint from boot, got ok=%v err=%v", ok, err)
+	}
+	if before != schema.Fingerprint(ra.Schema) {
+		t.Fatal("baseline fingerprint does not match the booted schema")
+	}
+
+	const v2 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_title", "name": "title", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" },
+          { "id": "fld_note", "name": "note", "type": "text" }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v2), Options{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	ra, _ = reg.App("tracker")
+	after, ok, err := ra.Store.AppliedFingerprint()
+	if err != nil || !ok {
+		t.Fatalf("expected an updated fingerprint after migration, got ok=%v err=%v", ok, err)
+	}
+	if after == before {
+		t.Fatal("fingerprint did not change after a schema-changing migration")
+	}
+	if after != schema.Fingerprint(ra.Schema) {
+		t.Fatal("recorded fingerprint does not match the newly migrated schema")
+	}
+}
+
+// TestApplyRenameOnlyMigrationLeavesFingerprintUnchanged proves a pure
+// rename — classified safe, and executed with zero SQL — correctly leaves
+// the fingerprint's value unchanged, since schema.Fingerprint excludes Name
+// by design: a rename is not a schema-relevant change.
+func TestApplyRenameOnlyMigrationLeavesFingerprintUnchanged(t *testing.T) {
+	reg, _ := setupReg(t, "tracker", applyV1)
+	ra, _ := reg.App("tracker")
+	before, _, _ := ra.Store.AppliedFingerprint()
+
+	const renamed = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "renamed_item", "fields": [
+          { "id": "fld_title", "name": "renamed_title", "type": "text", "required": true },
+          { "id": "fld_count", "name": "count", "type": "integer" }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(renamed), Options{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	ra, _ = reg.App("tracker")
+	after, ok, err := ra.Store.AppliedFingerprint()
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if after != before {
+		t.Fatal("a pure rename must not change the recorded fingerprint")
+	}
+	if after != schema.Fingerprint(ra.Schema) {
+		t.Fatal("recorded fingerprint must still match the (renamed) schema")
+	}
+}
+
+// TestApplyFailedMigrationLeavesFingerprintAtPriorValue proves the
+// fingerprint only ever moves forward on success: a migration whose
+// execution fails and is restored from snapshot must leave the fingerprint
+// exactly where it was (restored as part of the same byte-for-byte snapshot
+// restore that reverts the data, since the fingerprint lives inside the
+// same data.db file).
+func TestApplyFailedMigrationLeavesFingerprintAtPriorValue(t *testing.T) {
+	const v1 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 1 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_code", "name": "code", "type": "text", "required": true }
+        ]}
+      ]
+    }`
+	reg, _ := setupReg(t, "tracker", v1)
+	seedReg(t, reg, "tracker", "item", map[string]any{"code": "dup"})
+	seedReg(t, reg, "tracker", "item", map[string]any{"code": "dup"})
+
+	ra, _ := reg.App("tracker")
+	before, _, _ := ra.Store.AppliedFingerprint()
+
+	const v2 = `{
+      "app": { "id": "tracker", "name": "Tracker", "version": 2 },
+      "entities": [
+        { "id": "ent_item", "name": "item", "fields": [
+          { "id": "fld_code", "name": "code", "type": "text", "required": true, "unique": true }
+        ]}
+      ]
+    }`
+	if _, err := Apply(context.Background(), reg, "tracker", []byte(v2), Options{Confirm: true}); err == nil {
+		t.Fatal("adding a unique constraint over duplicates must fail")
+	}
+
+	ra, _ = reg.App("tracker")
+	after, ok, err := ra.Store.AppliedFingerprint()
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if after != before {
+		t.Fatal("a failed, restored migration must leave the fingerprint at its prior value")
+	}
+	if after != schema.Fingerprint(ra.Schema) {
+		t.Fatal("fingerprint must still match the restored (unchanged) schema")
+	}
 }
 
 func TestApplyNoChange(t *testing.T) {

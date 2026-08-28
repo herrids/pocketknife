@@ -20,6 +20,14 @@ import (
 // reference changes use the SQLite table-rebuild pattern. The whole changeset is
 // one transaction: any failure leaves the database unchanged, and the apply flow
 // additionally restores a file snapshot for destructive runs.
+//
+// The same transaction also records newApp's schema fingerprint
+// (store.WriteAppliedFingerprintTx), so the fingerprint that gates boot-time
+// loading (registry.Load) only ever moves forward atomically with the schema
+// change that earned it — never a moment before or after. A pure-rename
+// changeset skips this too (see allNoSQL below): a rename never changes the
+// fingerprint's value (schema.Fingerprint excludes Name), so there is
+// nothing to move forward.
 func Execute(ctx context.Context, st *store.Store, oldApp, newApp *schema.App, cs *Changeset) error {
 	// A changeset of only renames touches no physical identifier (the column is
 	// the unchanged stable id), so it runs literally zero SQL — no transaction is
@@ -28,7 +36,10 @@ func Execute(ctx context.Context, st *store.Store, oldApp, newApp *schema.App, c
 		return nil
 	}
 	return st.RunMigration(ctx, func(tx *sql.Tx) error {
-		return applyChangeset(tx, oldApp, newApp, cs)
+		if err := applyChangeset(tx, oldApp, newApp, cs); err != nil {
+			return err
+		}
+		return store.WriteAppliedFingerprintTx(tx, schema.Fingerprint(newApp))
 	})
 }
 

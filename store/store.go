@@ -60,6 +60,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(schemaMetaDDL); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create schema metadata table: %w", err)
+	}
 	return &Store{db: db, path: path}, nil
 }
 
@@ -228,6 +232,59 @@ func diffColumnSets(expected, actual []string) (missing, extra []string) {
 		}
 	}
 	return missing, extra
+}
+
+// schemaMetaTable holds the single row recording the fingerprint of the
+// schema last successfully applied to this database (see
+// schema.Fingerprint). Its name leads with an underscore, which no entity
+// id can ever match (entity/field stable ids are constrained to
+// ^[a-z][a-z0-9_]*$), so it can never collide with an app-declared table.
+const schemaMetaTable = "_schema_meta"
+
+const schemaMetaDDL = `CREATE TABLE IF NOT EXISTS ` + schemaMetaTable + ` (
+	id INTEGER PRIMARY KEY CHECK (id = 0),
+	fingerprint TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);`
+
+const upsertSchemaMetaSQL = `INSERT INTO ` + schemaMetaTable + ` (id, fingerprint, updated_at) VALUES (0, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET fingerprint = excluded.fingerprint, updated_at = excluded.updated_at;`
+
+// AppliedFingerprint returns the fingerprint of the schema last successfully
+// applied to this database, or ok=false if none has ever been recorded — a
+// brand-new database before its first materialize, or a database created
+// before this mechanism existed (a "legacy" app).
+func (s *Store) AppliedFingerprint() (fingerprint string, ok bool, err error) {
+	err = s.db.QueryRow("SELECT fingerprint FROM "+schemaMetaTable+" WHERE id = 0;").Scan(&fingerprint)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read applied schema fingerprint: %w", err)
+	}
+	return fingerprint, true, nil
+}
+
+// SetAppliedFingerprint records fingerprint as the schema currently applied
+// to this database. Callers must only call this once they know the schema
+// operation that produced this fingerprint actually succeeded — see
+// WriteAppliedFingerprintTx for recording it atomically with the migration
+// that produced it.
+func (s *Store) SetAppliedFingerprint(fingerprint string) error {
+	if _, err := s.db.Exec(upsertSchemaMetaSQL, fingerprint, NowUTC()); err != nil {
+		return fmt.Errorf("set applied schema fingerprint: %w", err)
+	}
+	return nil
+}
+
+// WriteAppliedFingerprintTx records fingerprint using an already-open
+// transaction, so a migration's schema change and its fingerprint update
+// commit — or roll back — together. Used by migrate/execute.go.
+func WriteAppliedFingerprintTx(tx *sql.Tx, fingerprint string) error {
+	if _, err := tx.Exec(upsertSchemaMetaSQL, fingerprint, NowUTC()); err != nil {
+		return fmt.Errorf("set applied schema fingerprint: %w", err)
+	}
+	return nil
 }
 
 // RunMigration executes fn within the SQLite scaffold documented for changing a

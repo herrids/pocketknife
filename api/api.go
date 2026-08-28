@@ -111,6 +111,18 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 // wire-transport concern. If the app or entity can't be resolved, this
 // simply has nothing to check — domain.Create/Update will independently
 // resolve and report the real app_not_found/entity_not_found error.
+//
+// Deliberate contract (not incidental): when unknown fields are present,
+// this short-circuits with 400 before domain.Create/Update is ever called,
+// so the response never mixes an "unknown field" issue with a per-field
+// domain-validation issue (e.g. a separate, valid field's missing-required
+// error) — the two are reported in separate requests if both are present.
+// This keeps the wire-shape question ("is this body even addressed to this
+// schema") fully separate from the domain-semantics question ("is this
+// data valid"), and keeps domain.Create/Update's contract simple: if they
+// run at all, every key in body was already a known field, and — the
+// property that matters most — a request with unknown fields can never
+// cause a row to be inserted or updated, since domain is never invoked.
 func (s *Server) unknownFieldIssues(appID, entName string, body map[string]json.RawMessage) []domain.FieldError {
 	ra, ok := s.reg.App(appID)
 	if !ok {
@@ -131,6 +143,17 @@ func (s *Server) unknownFieldIssues(appID, entName string, body map[string]json.
 
 // decodeBody reads a JSON object body into raw per-key messages, deferring
 // per-field decoding to domain. A non-object or malformed body is a 400.
+//
+// Deliberate contract (not incidental): decodeBody runs before any
+// app/entity resolution in handleCreate/handleUpdate, so a malformed body
+// against an unknown app returns 400 invalid_body, not 404 app_not_found.
+// This is the natural consequence of a strict pipeline ordering — HTTP-level
+// structural validity (is this even parseable JSON?) gates domain
+// resolution (does this app/entity exist?), never the other way around —
+// which also matches how every handler is actually structured: there is no
+// well-formed map[string]json.RawMessage to hand to domain.Create/Update
+// until the body has already been decoded, so decoding first isn't a
+// choice made per request, it's what the adapter's data flow requires.
 func decodeBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, bool) {
 	defer r.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))

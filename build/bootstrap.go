@@ -9,6 +9,7 @@ import (
 
 	"pocketknife/materialize"
 	"pocketknife/registry"
+	"pocketknife/schema"
 	"pocketknife/store"
 	"pocketknife/validate"
 )
@@ -19,6 +20,12 @@ import (
 // registry.Load's per-app bootstrap (validate -> materialize -> open store ->
 // register) and then runs the same build-and-activate tail Deploy's install
 // path runs, under one platform build job.
+//
+// Most callers should use ApplyDeployment instead: it decides Bootstrap vs.
+// Deploy for you, atomically with the per-app lock, so a concurrent caller
+// can never race that decision. Bootstrap assumes the caller has already
+// established the app does not yet exist and holds its lock -- true for
+// ApplyDeployment and for this package's own tests.
 //
 // Every step happens inside a temp-named staging directory under appsDir;
 // only once the database is built and the frontend artifact is copied does
@@ -109,6 +116,10 @@ func Bootstrap(reg *registry.Registry, bst *Store, appsDir string, manifestBytes
 	if err := st.ApplyDDL(stmts); err != nil {
 		st.Close()
 		return fail(fmt.Errorf("apply ddl: %w", err))
+	}
+	if err := st.SetAppliedFingerprint(schema.Fingerprint(app)); err != nil {
+		st.Close()
+		return fail(fmt.Errorf("record applied schema fingerprint: %w", err))
 	}
 	if err := st.Close(); err != nil {
 		return fail(fmt.Errorf("close staged store: %w", err))

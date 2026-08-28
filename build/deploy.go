@@ -27,13 +27,20 @@ type Result struct {
 // kept per app after a successful activation.
 const DefaultBuildRetention = 5
 
-// Deploy is the one entry point for both halves of Phase 2: building and
-// activating an app's frontend for its current manifest (Kind = install), and
-// the "second deploy" — a new manifest version landed as one operation with a
-// data migration, a frontend rebuild, and a single rollback contract (Kind =
-// deploy). manifestBytes is the manifest to build for: pass the app's own
-// on-disk manifest back in to (re)build the current version's frontend, or a
-// new version to redeploy.
+// Deploy is the install/second-deploy primitive for an app the registry
+// already knows about: building and activating its frontend for its current
+// manifest (Kind = install), or the "second deploy" — a new manifest version
+// landed as one operation with a data migration, a frontend rebuild, and a
+// single rollback contract (Kind = deploy). manifestBytes is the manifest to
+// build for: pass the app's own on-disk manifest back in to (re)build the
+// current version's frontend, or a new version to redeploy.
+//
+// Most callers should use ApplyDeployment instead: it decides Bootstrap vs.
+// Deploy for you, atomically with the per-app lock, so a concurrent caller
+// can never race that decision. Deploy assumes the caller has already
+// established the app exists and holds its lock — true for ApplyDeployment
+// and for this package's own tests, which call Deploy directly to exercise
+// fine-grained failure/rollback behavior.
 //
 // Ordering for a second deploy is: snapshot the data unconditionally -> run
 // the data migration -> build the new frontend -> activate. On any failure

@@ -300,7 +300,12 @@ func runBuild(args []string) {
 		}
 	}
 
-	res, err := build.Deploy(context.Background(), reg, bst, *appID, manifestBytes, opts)
+	// ApplyDeployment is the safe public entry point even though this CLI
+	// already knows the app exists (the ra, ok check above is only for a
+	// clear "unknown app" CLI error) — it costs nothing to go through the
+	// same lock-and-decide protocol every other caller uses, and the CLI
+	// never has a bundle to extract, so bundle is nil.
+	res, err := build.ApplyDeployment(context.Background(), reg, bst, *appsDir, manifestBytes, nil, opts)
 	if err != nil {
 		if res != nil && res.Job != nil {
 			log.Fatalf("build failed (job %s, state %s): %v", res.Job.ID, res.Job.State, err)

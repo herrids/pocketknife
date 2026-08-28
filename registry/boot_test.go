@@ -5,8 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pocketknife/materialize"
 	"pocketknife/registry"
+	"pocketknife/schema"
 	"pocketknife/store"
+	"pocketknife/validate"
 )
 
 func writeManifest(t *testing.T, root, appID, body string) {
@@ -220,6 +223,231 @@ func TestManifestDatabaseMismatchIsSkippedNotServed(t *testing.T) {
 	}
 	if _, ok := reg2.App("tasks"); !ok {
 		t.Fatal("a sibling mismatched app must not stop an unaffected one from booting")
+	}
+}
+
+// TestFreshAppAdoptsSchemaFingerprintOnFirstBoot proves a brand-new app gets
+// its schema fingerprint recorded on its very first boot.
+func TestFreshAppAdoptsSchemaFingerprintOnFirstBoot(t *testing.T) {
+	root := t.TempDir()
+	writeManifest(t, root, "reading_tracker", readingManifest)
+
+	reg, results, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	for _, r := range results {
+		if !r.OK {
+			t.Fatalf("boot: %v %v", r.Errors, r.Err)
+		}
+	}
+
+	ra, _ := reg.App("reading_tracker")
+	fp, ok, err := ra.Store.AppliedFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("a freshly booted app must have its schema fingerprint recorded")
+	}
+	if want := schema.Fingerprint(ra.Schema); fp != want {
+		t.Fatalf("recorded fingerprint = %s, want %s", fp, want)
+	}
+}
+
+// TestConstraintOnlyMismatchIsCaughtByFingerprintNotColumnCheck proves the
+// fingerprint mechanism catches a constraint-only change (same columns,
+// different semantics) that Store.VerifySchema's column-name check alone
+// cannot see — the exact gap TestVerifySchemaDoesNotDetect* in store/
+// characterizes.
+func TestConstraintOnlyMismatchIsCaughtByFingerprintNotColumnCheck(t *testing.T) {
+	root := t.TempDir()
+	const v1 = `{
+      "app": { "id": "notes", "name": "Notes", "version": 1 },
+      "entities": [{ "id": "ent_note", "name": "note", "fields": [
+        { "id": "fld_title", "name": "title", "type": "text" }
+      ]}]
+    }`
+	writeManifest(t, root, "notes", v1)
+
+	reg, results, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if !r.OK {
+			t.Fatalf("initial boot: %v %v", r.Errors, r.Err)
+		}
+	}
+	reg.Close()
+
+	// Hand-edit: same field, same physical column, now required — a pure
+	// constraint change with no column-level footprint at all.
+	const v1Required = `{
+      "app": { "id": "notes", "name": "Notes", "version": 1 },
+      "entities": [{ "id": "ent_note", "name": "note", "fields": [
+        { "id": "fld_title", "name": "title", "type": "text", "required": true }
+      ]}]
+    }`
+	writeManifest(t, root, "notes", v1Required)
+
+	reg2, results2, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg2.Close()
+
+	var res *registry.LoadResult
+	for i := range results2 {
+		if filepath.Base(filepath.Dir(results2[i].ManifestPath)) == "notes" {
+			res = &results2[i]
+		}
+	}
+	if res == nil || res.OK {
+		t.Fatal("a constraint-only mismatch must not boot OK")
+	}
+	if res.Err == nil {
+		t.Fatal("expected a clear diagnostic error for the fingerprint mismatch")
+	}
+	if _, ok := reg2.App("notes"); ok {
+		t.Fatal("a fingerprint-mismatched app must never be registered/served")
+	}
+}
+
+// materializeLegacyApp builds an app's manifest.json + data.db directly via
+// materialize/store, bypassing registry.Load and build.Bootstrap entirely —
+// simulating a database that predates the schema-fingerprint mechanism
+// (never had SetAppliedFingerprint called against it).
+func materializeLegacyApp(t *testing.T, root, appID, manifestJSON string) {
+	t.Helper()
+	dir := filepath.Join(root, appID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(manifestJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app, verrs := validate.Manifest([]byte(manifestJSON))
+	if len(verrs) > 0 {
+		t.Fatalf("manifest invalid: %v", verrs)
+	}
+	stmts, err := materialize.Statements(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "data.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.ApplyDDL(stmts); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately no SetAppliedFingerprint call.
+}
+
+// TestLegacyAppWithoutFingerprintAdoptsBaselineWhenStructurallyConsistent
+// documents the safe legacy path: a database that predates the fingerprint
+// mechanism, but is genuinely structurally consistent with its manifest,
+// boots successfully and adopts the manifest's fingerprint as its baseline.
+func TestLegacyAppWithoutFingerprintAdoptsBaselineWhenStructurallyConsistent(t *testing.T) {
+	root := t.TempDir()
+	const v1 = `{
+      "app": { "id": "legacy", "name": "Legacy", "version": 1 },
+      "entities": [{ "id": "ent_x", "name": "x", "fields": [
+        { "id": "fld_y", "name": "y", "type": "text" }
+      ]}]
+    }`
+	materializeLegacyApp(t, root, "legacy", v1)
+
+	reg, results, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	for _, r := range results {
+		if !r.OK {
+			t.Fatalf("legacy app failed to adopt the fingerprint baseline: %v %v", r.Errors, r.Err)
+		}
+	}
+
+	ra, ok := reg.App("legacy")
+	if !ok {
+		t.Fatal("a structurally-consistent legacy app must be registered")
+	}
+	fp, hasFP, err := ra.Store.AppliedFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFP || fp != schema.Fingerprint(ra.Schema) {
+		t.Fatal("legacy app must have adopted the manifest's fingerprint as its baseline on this boot")
+	}
+}
+
+// TestLegacyAppAlreadyMismatchedAdoptsOnceThenDetectsFurtherDrift documents
+// the accepted, one-time limitation of adopting the fingerprint mechanism
+// after the fact: a legacy database that was already constraint-mismatched
+// relative to its manifest (same columns, different semantics — invisible
+// to VerifySchema) boots and adopts that mismatched manifest's fingerprint
+// as its baseline, since nothing before this point could have proven
+// otherwise. Any *further* drift from that point on, however, is caught
+// exactly like a fully up-to-date app's would be.
+func TestLegacyAppAlreadyMismatchedAdoptsOnceThenDetectsFurtherDrift(t *testing.T) {
+	root := t.TempDir()
+	// Materialize with the field optional...
+	const materializedAsOptional = `{
+      "app": { "id": "legacy", "name": "Legacy", "version": 1 },
+      "entities": [{ "id": "ent_x", "name": "x", "fields": [
+        { "id": "fld_y", "name": "y", "type": "text" }
+      ]}]
+    }`
+	materializeLegacyApp(t, root, "legacy", materializedAsOptional)
+
+	// ...but the manifest on disk already (before this mechanism ever ran)
+	// claims the field is required — a pre-existing, undetectable-at-this-
+	// point mismatch.
+	const manifestClaimsRequired = `{
+      "app": { "id": "legacy", "name": "Legacy", "version": 1 },
+      "entities": [{ "id": "ent_x", "name": "x", "fields": [
+        { "id": "fld_y", "name": "y", "type": "text", "required": true }
+      ]}]
+    }`
+	writeManifest(t, root, "legacy", manifestClaimsRequired)
+
+	reg, results, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range results {
+		if !r.OK {
+			t.Fatalf("expected the pre-existing mismatch to be silently adopted on first upgrade, got: %v %v", r.Errors, r.Err)
+		}
+	}
+	reg.Close()
+
+	// From here on, the mismatched manifest IS the recorded baseline. Any
+	// further hand-edit must be caught normally.
+	const furtherDrift = `{
+      "app": { "id": "legacy", "name": "Legacy", "version": 1 },
+      "entities": [{ "id": "ent_x", "name": "x", "fields": [
+        { "id": "fld_y", "name": "y", "type": "text", "required": true, "unique": true }
+      ]}]
+    }`
+	writeManifest(t, root, "legacy", furtherDrift)
+
+	reg2, results2, err := registry.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg2.Close()
+	for _, r := range results2 {
+		if r.OK {
+			t.Fatal("further drift past the adopted baseline must be detected and refused")
+		}
+	}
+	if _, ok := reg2.App("legacy"); ok {
+		t.Fatal("an app with further undetected drift must never be registered/served")
 	}
 }
 
