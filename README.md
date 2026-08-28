@@ -21,6 +21,12 @@ server-side functions — implemented and tested, but not yet invoked by any
 HTTP or MCP entry point in this binary; see "Sandboxed functions" below for
 what that means in practice today.
 
+An app can also declare **tools**: named, manifest-defined operations that
+run one or more of its own CRUD calls in sequence, exposed live over MCP at
+`/mcp/{app_id}` — one MCP tool per declared tool, one call to the tools engine
+(`tools/`) per invocation, atomic across every step. See "Optional: `tools`"
+and "MCP tools" below.
+
 The same binary also serves a **shell launcher** — a React SPA that is the host
 UI for the whole system. From the shell a user can browse, open, and manage every
 registered app. Pressing "+ New" starts a **conversational authoring session**
@@ -72,6 +78,8 @@ client/           typed TypeScript client generator (pure fn of the schema)
 sandbox/          capability-checked WebAssembly sandbox for functions
 broker/           the only path from a function to a model provider
 consent/          derives an app's union capability surface from the manifest
+tools/            executes a manifest-declared tool's CRUD step sequence atomically
+mcpserver/        MCP transport over tools/: one /mcp/{app} endpoint per app
 platform/         session auth + registry API + agent bridge (all /platform/ routes)
 shellserve/       serves the compiled shell SPA (shell/dist/) at /
 deployapi/        POST /deploy ingest — receives approved bundles from the agent
@@ -367,6 +375,55 @@ app directory.
   - `model` — access to the model broker. The function never receives the
     underlying provider token.
 
+### Optional: `tools`
+
+A third optional top-level key, `tools`, declares named operations exposed to
+MCP clients at `/mcp/{app_id}` (see "MCP tools" below). Unlike `functions`,
+a tool is not code: it's an ordered, non-branching sequence of CRUD calls
+into the app's *own* entities, so it needs no sandbox — it can't do anything
+a direct call against `/apps/{app}/{entity}` couldn't already do; it only
+names and sequences those calls, atomically, in one transaction.
+
+```json
+{
+  "app": { "id": "tasks", "name": "Tasks", "version": 1 },
+  "entities": [ ... ],
+  "tools": [
+    {
+      "id": "tool_new_project_task",
+      "name": "new_project_task",
+      "description": "Create a project, then a task inside it",
+      "params": [
+        { "id": "p_project_name", "name": "project_name", "type": "text", "required": true },
+        { "id": "p_title", "name": "title", "type": "text", "required": true }
+      ],
+      "steps": [
+        { "id": "project", "op": "create", "entity": "ent_project", "set": { "name": "$params.project_name" } },
+        { "id": "task", "op": "create", "entity": "ent_task", "set": { "title": "$params.title", "project": "$steps.project.id" } }
+      ]
+    }
+  ]
+}
+```
+
+- **`params`** declares the tool's call-time inputs using the exact same
+  shape as an entity field (`type`, `required`, `default`, and that type's
+  constraint keys) — so the same field-coercion rules validate them, and the
+  MCP endpoint renders them as a real JSON Schema for the tool's arguments.
+- **`steps`** is the ordered CRUD sequence, one of `create`/`read`/`update`/
+  `delete` per step against one entity, restricted to operations that
+  entity's own `operations` list already allows. `rowId` is required for
+  read/update/delete and forbidden for create; `set` maps field name to value
+  for create/update.
+- Every `rowId`/`set` value is either a **literal** JSON value or a
+  **reference**: a string of the form `"$params.<name>"` (this call's
+  arguments) or `"$steps.<id>.<field>"` (an earlier step's result row in the
+  same call — forward references and cycles are rejected at validation time,
+  since a step can only ever reference something that ran before it).
+- All steps in one call run inside **one database transaction**: a failure
+  at any step rolls back every earlier step in that same call, so a tool
+  either fully applies or has no effect at all.
+
 ## HTTP API
 
 All routes are namespaced by app: `/apps/{app_id}/{entity_name}`.
@@ -413,6 +470,7 @@ enum membership, and reference-target existence.
 | `GET /builds/{app}` | Every build job for an app, plus its durable activation pointer (read-only observability) |
 | `GET /builds/job/{id}` | One build job by id |
 | `GET /ui/{app}/{path...}` | The app's activated frontend bundle; unmatched paths fall back to the frontend's entry file (SPA routing) |
+| `* /mcp/{app}` | MCP streamable-HTTP endpoint exposing the app's declared `tools` (see "MCP tools" below); `404` for an unknown app id |
 | `POST /deploy` | Ingest an approved manifest + built frontend bundle (`multipart/form-data`: `jobId`, `manifest`, `bundle`); installs a new app or redeploys an existing one |
 | `POST /platform/auth/login` | Password login → session cookie |
 | `POST /platform/auth/logout` | Invalidate session |
@@ -620,6 +678,39 @@ typed client mirroring the CRUD/list surface, URL scheme, query syntax, JSON
 shapes and error envelope) from a validated schema model. It is a pure function
 of the `*schema.App`: an unchanged manifest produces byte-identical output, so
 regenerating is a no-op diff.
+
+## MCP tools (`mcpserver/`, `tools/`)
+
+Every app's declared `tools` (see "Optional: `tools`" above) are live over
+MCP at `/mcp/{app_id}` — a [streamable-HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+endpoint, one per app, served stateless (no session persistence needed since
+a tool call is a single request/response, same as the rest of this API). An
+unknown app id is a `404`, matching every other per-app route.
+
+`tools.Execute` is the transport-neutral engine: given an app, a tool (by id
+or name) and a JSON object of params, it validates the params against the
+tool's declared parameter list (reusing `domain.CoerceFieldValue` exactly, so
+a reference-typed param's target is existence-checked the same way a normal
+write's would be), then runs every step in order against **one database
+transaction** — `store.Tx`, a transaction-scoped view of the same
+Insert/GetByID/Update/Delete/List/Exists surface `store.Store` exposes — so a
+failure at any step rolls back everything earlier steps in that call did.
+Each step calls `domain.CreateIn`/`GetIn`/`UpdateIn`/`DeleteIn`, the same
+validation and coercion logic `domain.Create`/`Get`/`Update`/`Delete` run for
+the HTTP API, just against that shared transaction instead of the store's
+ambient connection.
+
+`mcpserver.NewServer` is the thin transport adapter: for each app it builds
+an `mcp.Server` (from the [official Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk))
+with one MCP tool per declared tool — the tool's `params` rendered as a JSON
+Schema for the call arguments — and a handler that decodes the call's raw
+arguments and runs `tools.Execute`. A tool-level failure (bad params, a
+step's validation error, a row not found) comes back as
+`CallToolResult.IsError`, not a protocol-level error, so an MCP client sees
+it as something to explain or retry rather than a transport fault. The
+server is resolved fresh from the registry per session, so a redeployed
+app's tool set is visible immediately, exactly like `assets.NewServer`
+resolving the active frontend bundle fresh on every request.
 
 ## Deferred (still out of scope)
 

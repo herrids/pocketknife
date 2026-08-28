@@ -26,6 +26,7 @@ import (
 	"pocketknife/build"
 	"pocketknife/cors"
 	"pocketknife/deployapi"
+	"pocketknife/mcpserver"
 	"pocketknife/migrate"
 	"pocketknife/platform"
 	"pocketknife/registry"
@@ -151,6 +152,7 @@ func runServe(args []string) {
 
 	mux := http.NewServeMux()
 	mux.Handle("/apps/", api.NewServer(reg))
+	mux.Handle("/mcp/", mcpserver.NewServer(reg))
 	mux.Handle("/builds/", build.NewStatusServer(bst, reg))
 	mux.Handle("/ui/", assets.NewServer(reg))
 	mux.Handle("/validate", validateapi.NewServer())

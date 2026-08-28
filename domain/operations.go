@@ -6,10 +6,12 @@
 // rules (coerce.go), and calls the store, returning a structured *OpError a
 // transport maps to its own wire shape.
 //
-// This is the seam a future MCP transport needs: today only api/ wraps
-// these functions, but sandbox/'s function runtime already proves the
-// underlying pattern (call the store directly, no HTTP in sight) works, and
-// nothing here changes for MCP to become a second caller alongside HTTP.
+// This is the seam the MCP transport (mcpserver/) uses: api/ wraps these
+// functions for HTTP, tools/ wraps the *In variants (CreateIn/GetIn/UpdateIn/
+// DeleteIn) to run a manifest-declared tool's step sequence atomically
+// against one transaction, and mcpserver/ exposes each declared tool as an
+// MCP tool over that engine. sandbox/'s function runtime independently proves
+// the same underlying pattern (call the store directly, no HTTP in sight).
 package domain
 
 import (
@@ -76,7 +78,11 @@ func notFoundRow(ent *schema.Entity, id string) *OpError {
 // possible future caller with different transport-level policies (e.g. a
 // sandboxed function reporting only the first issue) can do so by simply
 // taking issues[0] rather than needing a different code path here.
-func coerceFields(ra *registry.RegisteredApp, ent *schema.Entity, body map[string]json.RawMessage, onCreate bool) (map[string]any, []FieldError) {
+//
+// rs is the store the coerced values run against — ra.Store for the normal
+// HTTP path, or a transaction-scoped store for a caller (e.g. the tools
+// engine) composing this call with others atomically.
+func coerceFields(rs RowStore, appSchema *schema.App, ent *schema.Entity, body map[string]json.RawMessage, onCreate bool) (map[string]any, []FieldError) {
 	values := map[string]any{}
 	var issues []FieldError
 	for _, f := range ent.Fields {
@@ -93,7 +99,7 @@ func coerceFields(ra *registry.RegisteredApp, ent *schema.Entity, body map[strin
 			// partial-update contract.
 			continue
 		}
-		val, isNull, ferr := CoerceFieldValue(ra.Schema, ra.Store, f, raw)
+		val, isNull, ferr := CoerceFieldValue(appSchema, rs, f, raw)
 		if ferr != nil {
 			issues = append(issues, *ferr)
 			continue
@@ -111,15 +117,13 @@ func coerceFields(ra *registry.RegisteredApp, ent *schema.Entity, body map[strin
 	return values, issues
 }
 
-// Create validates body against ent's declared fields and inserts a new row,
-// with the platform columns (id, created_at, updated_at) set automatically.
-func Create(reg *registry.Registry, appID, entityName string, body map[string]json.RawMessage) (map[string]any, *OpError) {
-	ra, ent, operr := resolveEntity(reg, appID, entityName, schema.OpCreate)
-	if operr != nil {
-		return nil, operr
-	}
-
-	values, issues := coerceFields(ra, ent, body, true)
+// CreateIn runs Create's validation and insert logic against an explicit
+// store rather than resolving one from the registry. Create is the common
+// case (rs = ra.Store); the tools engine is the other caller, running several
+// entities' worth of these *In functions against one shared transaction so a
+// whole step sequence commits or rolls back together.
+func CreateIn(rs RowStore, ra *registry.RegisteredApp, ent *schema.Entity, body map[string]json.RawMessage) (map[string]any, *OpError) {
+	values, issues := coerceFields(rs, ra.Schema, ent, body, true)
 	if len(issues) > 0 {
 		return nil, &OpError{Kind: ErrValidation, Message: "request body failed validation", Issues: issues}
 	}
@@ -129,9 +133,31 @@ func Create(reg *registry.Registry, appID, entityName string, body map[string]js
 	values["created_at"] = now
 	values["updated_at"] = now
 
-	row, err := ra.Store.Insert(ent, values)
+	row, err := rs.Insert(ent, values)
 	if err != nil {
 		return nil, storeOpError(err)
+	}
+	return row, nil
+}
+
+// Create validates body against ent's declared fields and inserts a new row,
+// with the platform columns (id, created_at, updated_at) set automatically.
+func Create(reg *registry.Registry, appID, entityName string, body map[string]json.RawMessage) (map[string]any, *OpError) {
+	ra, ent, operr := resolveEntity(reg, appID, entityName, schema.OpCreate)
+	if operr != nil {
+		return nil, operr
+	}
+	return CreateIn(ra.Store, ra, ent, body)
+}
+
+// GetIn runs Get's read against an explicit store; see CreateIn.
+func GetIn(rs RowStore, ent *schema.Entity, id string) (map[string]any, *OpError) {
+	row, err := rs.GetByID(ent, id)
+	if err != nil {
+		return nil, storeOpError(err)
+	}
+	if row == nil {
+		return nil, notFoundRow(ent, id)
 	}
 	return row, nil
 }
@@ -142,14 +168,7 @@ func Get(reg *registry.Registry, appID, entityName, id string) (map[string]any, 
 	if operr != nil {
 		return nil, operr
 	}
-	row, err := ra.Store.GetByID(ent, id)
-	if err != nil {
-		return nil, storeOpError(err)
-	}
-	if row == nil {
-		return nil, notFoundRow(ent, id)
-	}
-	return row, nil
+	return GetIn(ra.Store, ent, id)
 }
 
 // List returns matching rows for the query-string-encoded filter/sort/
@@ -170,15 +189,10 @@ func List(reg *registry.Registry, appID, entityName string, query url.Values) (*
 	return &ListResult{Rows: rows, Total: total, Limit: q.Limit, Offset: q.Offset}, nil
 }
 
-// Update applies a partial change: only the fields present in body are
-// touched, everything else is left as-is.
-func Update(reg *registry.Registry, appID, entityName, id string, body map[string]json.RawMessage) (map[string]any, *OpError) {
-	ra, ent, operr := resolveEntity(reg, appID, entityName, schema.OpUpdate)
-	if operr != nil {
-		return nil, operr
-	}
-
-	existing, err := ra.Store.GetByID(ent, id)
+// UpdateIn runs Update's validation and write logic against an explicit
+// store; see CreateIn.
+func UpdateIn(rs RowStore, ra *registry.RegisteredApp, ent *schema.Entity, id string, body map[string]json.RawMessage) (map[string]any, *OpError) {
+	existing, err := rs.GetByID(ent, id)
 	if err != nil {
 		return nil, storeOpError(err)
 	}
@@ -186,13 +200,13 @@ func Update(reg *registry.Registry, appID, entityName, id string, body map[strin
 		return nil, notFoundRow(ent, id)
 	}
 
-	values, issues := coerceFields(ra, ent, body, false)
+	values, issues := coerceFields(rs, ra.Schema, ent, body, false)
 	if len(issues) > 0 {
 		return nil, &OpError{Kind: ErrValidation, Message: "request body failed validation", Issues: issues}
 	}
 	values["updated_at"] = store.NowUTC()
 
-	row, err := ra.Store.Update(ent, id, values)
+	row, err := rs.Update(ent, id, values)
 	if err != nil {
 		return nil, storeOpError(err)
 	}
@@ -202,13 +216,19 @@ func Update(reg *registry.Registry, appID, entityName, id string, body map[strin
 	return row, nil
 }
 
-// Delete removes a row, reporting whether one existed.
-func Delete(reg *registry.Registry, appID, entityName, id string) (bool, *OpError) {
-	ra, ent, operr := resolveEntity(reg, appID, entityName, schema.OpDelete)
+// Update applies a partial change: only the fields present in body are
+// touched, everything else is left as-is.
+func Update(reg *registry.Registry, appID, entityName, id string, body map[string]json.RawMessage) (map[string]any, *OpError) {
+	ra, ent, operr := resolveEntity(reg, appID, entityName, schema.OpUpdate)
 	if operr != nil {
-		return false, operr
+		return nil, operr
 	}
-	deleted, err := ra.Store.Delete(ent, id)
+	return UpdateIn(ra.Store, ra, ent, id, body)
+}
+
+// DeleteIn runs Delete's logic against an explicit store; see CreateIn.
+func DeleteIn(rs RowStore, ent *schema.Entity, id string) (bool, *OpError) {
+	deleted, err := rs.Delete(ent, id)
 	if err != nil {
 		return false, storeOpError(err)
 	}
@@ -216,4 +236,13 @@ func Delete(reg *registry.Registry, appID, entityName, id string) (bool, *OpErro
 		return false, notFoundRow(ent, id)
 	}
 	return true, nil
+}
+
+// Delete removes a row, reporting whether one existed.
+func Delete(reg *registry.Registry, appID, entityName, id string) (bool, *OpError) {
+	ra, ent, operr := resolveEntity(reg, appID, entityName, schema.OpDelete)
+	if operr != nil {
+		return false, operr
+	}
+	return DeleteIn(ra.Store, ent, id)
 }

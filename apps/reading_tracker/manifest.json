@@ -13,5 +13,19 @@
       ]
     }
   ],
+  "tools": [
+    {
+      "id": "tool_mark_book_finished",
+      "name": "mark_book_finished",
+      "description": "Mark a book as finished (or unfinished)",
+      "params": [
+        { "id": "p_book_id", "name": "book_id", "type": "reference", "target": "ent_book", "required": true },
+        { "id": "p_done", "name": "done", "type": "boolean", "default": true }
+      ],
+      "steps": [
+        { "op": "update", "entity": "ent_book", "rowId": "$params.book_id", "set": { "done": "$params.done" } }
+      ]
+    }
+  ],
   "frontend": { "dist": "frontend/dist" }
 }

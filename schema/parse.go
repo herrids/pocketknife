@@ -3,6 +3,7 @@ package schema
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // raw* mirror the manifest JSON shape. They are intentionally permissive: the
@@ -15,6 +16,7 @@ type rawManifest struct {
 	Entities  []rawEntity   `json:"entities"`
 	Frontend  *rawFrontend  `json:"frontend"`
 	Functions []rawFunction `json:"functions"`
+	Tools     []rawTool     `json:"tools"`
 }
 
 type rawApp struct {
@@ -69,6 +71,22 @@ type rawField struct {
 	OnDelete string          `json:"onDelete"`
 }
 
+type rawTool struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Params      []rawField    `json:"params"`
+	Steps       []rawToolStep `json:"steps"`
+}
+
+type rawToolStep struct {
+	ID     string                     `json:"id"`
+	Op     string                     `json:"op"`
+	Entity string                     `json:"entity"`
+	RowID  json.RawMessage            `json:"rowId"`
+	Set    map[string]json.RawMessage `json:"set"`
+}
+
 // Parse converts manifest bytes into the typed model. It assumes the bytes have
 // already passed structural validation; it returns an error only on
 // genuinely-unparseable JSON or a default that cannot be coerced to the field's
@@ -101,30 +119,9 @@ func Parse(data []byte) (*App, error) {
 		}
 
 		for _, rf := range re.Fields {
-			f := &Field{
-				ID:       rf.ID,
-				Name:     rf.Name,
-				Type:     FieldType(rf.Type),
-				Required: rf.Required,
-				Unique:   rf.Unique,
-				Min:      rf.Min,
-				Max:      rf.Max,
-				Values:   rf.Values,
-				Target:   rf.Target,
-			}
-			if f.Type == TypeReference {
-				f.OnDelete = rf.OnDelete
-				if f.OnDelete == "" {
-					f.OnDelete = OnDeleteSetNull
-				}
-			}
-			if len(rf.Default) > 0 && string(rf.Default) != "null" {
-				v, err := normaliseDefault(f.Type, rf.Default)
-				if err != nil {
-					return nil, fmt.Errorf("entity %q field %q: %w", re.Name, rf.Name, err)
-				}
-				f.HasDefault = true
-				f.Default = v
+			f, err := parseField(rf)
+			if err != nil {
+				return nil, fmt.Errorf("entity %q field %q: %w", re.Name, rf.Name, err)
 			}
 			ent.Fields = append(ent.Fields, f)
 		}
@@ -159,7 +156,81 @@ func Parse(data []byte) (*App, error) {
 		app.Functions = append(app.Functions, fn)
 	}
 
+	for _, rt := range raw.Tools {
+		tool := &Tool{ID: rt.ID, Name: rt.Name, Description: rt.Description}
+		for _, rp := range rt.Params {
+			p, err := parseField(rp)
+			if err != nil {
+				return nil, fmt.Errorf("tool %q param %q: %w", rt.Name, rp.Name, err)
+			}
+			tool.Params = append(tool.Params, p)
+		}
+		for _, rs := range rt.Steps {
+			step := &ToolStep{
+				ID:     rs.ID,
+				Op:     Operation(rs.Op),
+				Entity: rs.Entity,
+				RowID:  parseStepValue(rs.RowID),
+			}
+			for name, raw := range rs.Set {
+				if step.Set == nil {
+					step.Set = map[string]*StepValue{}
+				}
+				step.Set[name] = parseStepValue(raw)
+			}
+			tool.Steps = append(tool.Steps, step)
+		}
+		app.Tools = append(app.Tools, tool)
+	}
+
 	return app, nil
+}
+
+// parseField converts one manifest field (or tool param, which shares the
+// same JSON shape) into the typed model.
+func parseField(rf rawField) (*Field, error) {
+	f := &Field{
+		ID:       rf.ID,
+		Name:     rf.Name,
+		Type:     FieldType(rf.Type),
+		Required: rf.Required,
+		Unique:   rf.Unique,
+		Min:      rf.Min,
+		Max:      rf.Max,
+		Values:   rf.Values,
+		Target:   rf.Target,
+	}
+	if f.Type == TypeReference {
+		f.OnDelete = rf.OnDelete
+		if f.OnDelete == "" {
+			f.OnDelete = OnDeleteSetNull
+		}
+	}
+	if len(rf.Default) > 0 && string(rf.Default) != "null" {
+		v, err := normaliseDefault(f.Type, rf.Default)
+		if err != nil {
+			return nil, err
+		}
+		f.HasDefault = true
+		f.Default = v
+	}
+	return f, nil
+}
+
+// parseStepValue decodes a raw JSON template slot (a ToolStep's rowId, or one
+// value in its set map) into a StepValue: a JSON string of the form
+// "$params.<name>" or "$steps.<id>.<field>" is a reference (stored without
+// its leading "$"); any other JSON value, including absent/null, is a
+// literal (nil for absent/null).
+func parseStepValue(raw json.RawMessage) *StepValue {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil && strings.HasPrefix(s, "$") {
+		return &StepValue{Ref: strings.TrimPrefix(s, "$")}
+	}
+	return &StepValue{Literal: raw}
 }
 
 // normaliseDefault decodes a raw default into the canonical Go type for the

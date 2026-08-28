@@ -2,6 +2,7 @@ package validate
 
 import (
 	"fmt"
+	"strings"
 
 	"pocketknife/schema"
 )
@@ -74,6 +75,121 @@ func semantic(app *schema.App) Errors {
 		fnNames[fn.Name] = true
 
 		errs = append(errs, validateCapabilities(fpath+"/capabilities", app, fn)...)
+	}
+
+	toolIDs := map[string]bool{}
+	toolNames := map[string]bool{}
+	for ti, tool := range app.Tools {
+		tpath := fmt.Sprintf("/tools/%d", ti)
+
+		if toolIDs[tool.ID] {
+			errs = append(errs, Error{tpath + "/id", "duplicate_id", fmt.Sprintf("tool id %q is not unique", tool.ID)})
+		}
+		toolIDs[tool.ID] = true
+
+		if toolNames[tool.Name] {
+			errs = append(errs, Error{tpath + "/name", "duplicate_name", fmt.Sprintf("tool name %q is not unique", tool.Name)})
+		}
+		toolNames[tool.Name] = true
+
+		errs = append(errs, validateTool(tpath, app, tool)...)
+	}
+	return errs
+}
+
+// validateTool checks a tool's params (the same per-field rules entity
+// fields get) and its step sequence: every step's entity and operation must
+// resolve to something the manifest actually allows, a step's rowId/set
+// requirements must match its op, every field a step writes must exist on
+// its target entity, and every "$params."/"$steps." reference must resolve
+// to a param declared on this tool or an earlier step in this same tool (no
+// forward references — a tool's steps form a DAG with no cycles by
+// construction, since a step may only ever reference something that ran
+// before it).
+func validateTool(path string, app *schema.App, tool *schema.Tool) Errors {
+	var errs Errors
+
+	paramNames := map[string]bool{}
+	for pi, p := range tool.Params {
+		ppath := fmt.Sprintf("%s/params/%d", path, pi)
+		if paramNames[p.Name] {
+			errs = append(errs, Error{ppath + "/name", "duplicate_name", fmt.Sprintf("param name %q is not unique in tool %q", p.Name, tool.Name)})
+		}
+		paramNames[p.Name] = true
+		errs = append(errs, validateField(ppath, app, nil, p)...)
+	}
+
+	if len(tool.Steps) == 0 {
+		errs = append(errs, Error{path + "/steps", "empty_steps", fmt.Sprintf("tool %q must declare at least one step", tool.Name)})
+	}
+
+	stepIDs := map[string]bool{}
+	for si, step := range tool.Steps {
+		spath := fmt.Sprintf("%s/steps/%d", path, si)
+
+		ent := app.EntityByID(step.Entity)
+		if ent == nil {
+			errs = append(errs, Error{spath + "/entity", "unresolved_reference", fmt.Sprintf("step entity %q does not resolve to an entity in this manifest", step.Entity)})
+		} else if !ent.Allows(step.Op) {
+			errs = append(errs, Error{spath + "/op", "scope_exceeds_entity", fmt.Sprintf("tool %q step calls %q on entity %q, which the entity itself does not allow", tool.Name, step.Op, ent.Name)})
+		}
+
+		switch step.Op {
+		case schema.OpCreate:
+			if step.RowID != nil {
+				errs = append(errs, Error{spath + "/rowId", "unexpected_field", "create steps must not declare rowId"})
+			}
+		case schema.OpRead, schema.OpUpdate, schema.OpDelete:
+			if step.RowID == nil {
+				errs = append(errs, Error{spath + "/rowId", "missing_field", fmt.Sprintf("%q steps require rowId", step.Op)})
+			}
+		}
+		if (step.Op == schema.OpRead || step.Op == schema.OpDelete) && len(step.Set) > 0 {
+			errs = append(errs, Error{spath + "/set", "unexpected_field", fmt.Sprintf("%q steps must not declare set", step.Op)})
+		}
+
+		if ent != nil {
+			for fname := range step.Set {
+				if isReserved(fname) {
+					errs = append(errs, Error{spath + "/set/" + fname, "reserved_name", fmt.Sprintf("field name %q is reserved by the platform", fname)})
+					continue
+				}
+				if ent.Field(fname) == nil {
+					errs = append(errs, Error{spath + "/set/" + fname, "unresolved_reference", fmt.Sprintf("field %q does not exist on entity %q", fname, ent.Name)})
+				}
+			}
+		}
+
+		checkRef := func(subpath string, sv *schema.StepValue) {
+			if sv == nil || sv.Ref == "" {
+				return
+			}
+			root, rest, _ := strings.Cut(sv.Ref, ".")
+			switch root {
+			case "params":
+				if !paramNames[rest] {
+					errs = append(errs, Error{subpath, "unresolved_reference", fmt.Sprintf("references undeclared param %q", sv.Ref)})
+				}
+			case "steps":
+				stepID, _, _ := strings.Cut(rest, ".")
+				if stepID == "" || !stepIDs[stepID] {
+					errs = append(errs, Error{subpath, "unresolved_reference", fmt.Sprintf("references an undeclared or not-yet-run step %q", sv.Ref)})
+				}
+			default:
+				errs = append(errs, Error{subpath, "bad_reference", fmt.Sprintf("unknown reference root %q (must be params or steps)", root)})
+			}
+		}
+		checkRef(spath+"/rowId", step.RowID)
+		for fname, sv := range step.Set {
+			checkRef(spath+"/set/"+fname, sv)
+		}
+
+		if step.ID != "" {
+			if stepIDs[step.ID] {
+				errs = append(errs, Error{spath + "/id", "duplicate_id", fmt.Sprintf("step id %q is not unique in tool %q", step.ID, tool.Name)})
+			}
+			stepIDs[step.ID] = true
+		}
 	}
 	return errs
 }

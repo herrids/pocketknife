@@ -7,6 +7,8 @@
 // keys; IDs never change. (A future migration engine will diff schemas by ID.)
 package schema
 
+import "encoding/json"
+
 // FieldType is the closed set of field types supported in v1. Any other value
 // is a validation error — there is no escape hatch.
 type FieldType string
@@ -60,6 +62,9 @@ type App struct {
 	// Functions are this app's sandboxed server-side functions, or nil if the
 	// app declares none.
 	Functions []*Function
+	// Tools are this app's declarative, manifest-defined MCP tools, or nil if
+	// the app declares none.
+	Tools []*Tool
 }
 
 // Frontend names a pre-built static asset bundle for this manifest version.
@@ -142,6 +147,85 @@ func (c *Capabilities) AllowsDomain(host string) bool {
 		}
 	}
 	return false
+}
+
+// Tool is a named, manifest-declared MCP tool: an ordered, non-branching
+// sequence of CRUD calls into this app's own entities, run atomically as one
+// transaction (see the tools package). A tool has no separate execution
+// boundary the way a Function does — it can only call domain's existing
+// Create/Read/Update/Delete on entities and operations the manifest already
+// allows, so it can't do anything a direct request against
+// /apps/{app}/{entity} couldn't already do; it only names and sequences
+// those calls for an MCP client. Arbitrary logic still belongs in Function.
+type Tool struct {
+	ID          string
+	Name        string
+	Description string
+	// Params are the tool's call-time inputs, declared with the same shape
+	// entity fields use (type/required/default/constraints), so the existing
+	// field-coercion machinery (CoerceFieldValue) validates them unchanged and
+	// an MCP client gets a real JSON Schema for its call arguments.
+	Params []*Field
+	Steps  []*ToolStep
+}
+
+// Tool returns the tool with the given name, or nil.
+func (a *App) Tool(name string) *Tool {
+	for _, t := range a.Tools {
+		if t.Name == name {
+			return t
+		}
+	}
+	return nil
+}
+
+// ToolByID returns the tool with the given stable ID, or nil.
+func (a *App) ToolByID(id string) *Tool {
+	for _, t := range a.Tools {
+		if t.ID == id {
+			return t
+		}
+	}
+	return nil
+}
+
+// Param returns the tool's declared parameter with the given name, or nil.
+func (t *Tool) Param(name string) *Field {
+	for _, p := range t.Params {
+		if p.Name == name {
+			return p
+		}
+	}
+	return nil
+}
+
+// ToolStep is one CRUD call in a tool's sequence, run in order. RowID and Set
+// values are templates (see StepValue), resolved against the call's params
+// and the results of earlier steps in the same tool before the step runs.
+type ToolStep struct {
+	// ID names this step's result for later steps to reference via a
+	// "steps.<id>.<field>" StepValue.Ref. Optional; only needed if referenced.
+	ID string
+	// Op is the CRUD operation this step performs; must be one the target
+	// Entity itself allows.
+	Op Operation
+	// Entity is the target entity's stable ID.
+	Entity string
+	// RowID resolves to the row id this step acts on. Required for read,
+	// update and delete; must be nil for create.
+	RowID *StepValue
+	// Set maps a field name on Entity to a template value. Used for create's
+	// initial values and update's changed fields; unused for read and delete.
+	Set map[string]*StepValue
+}
+
+// StepValue is a template resolved at call time inside a ToolStep. A Ref of
+// "params.<name>" resolves against the call's parameters; a Ref of
+// "steps.<id>.<field>" resolves against an earlier step's result row. A blank
+// Ref means Literal is a literal JSON value (of any JSON type), taken as-is.
+type StepValue struct {
+	Ref     string
+	Literal json.RawMessage
 }
 
 // Entity is a single table's worth of schema.

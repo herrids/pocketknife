@@ -344,11 +344,72 @@ func foreignKeyCheck(ctx context.Context, tx *sql.Tx) error {
 	return rows.Err()
 }
 
+// dbi is the subset of *sql.DB / *sql.Tx that the row CRUD helpers below need.
+// Both types satisfy it unchanged, so every helper works identically whether
+// it runs against the store's ambient connection or a caller-managed
+// transaction (see Tx) — the only difference is which one gets passed in.
+type dbi interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// Tx is a transaction-scoped view of one Store's row CRUD surface (the same
+// methods as Store itself: Insert/GetByID/Exists/List/Update/Delete), letting
+// several operations commit — or roll back — together. This is what gives a
+// manifest-declared tool's step sequence (see the tools package) atomicity:
+// every step in one call runs against the same Tx, and a failure at any step
+// rolls back everything the earlier steps in that call did.
+type Tx struct {
+	tx *sql.Tx
+}
+
+// BeginTx starts a transaction on the store's connection.
+func (s *Store) BeginTx(ctx context.Context) (*Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	return &Tx{tx: tx}, nil
+}
+
+// Commit commits the transaction.
+func (t *Tx) Commit() error { return t.tx.Commit() }
+
+// Rollback rolls back the transaction. Calling it after a successful Commit
+// is a no-op error callers are expected to ignore (the standard sql.Tx
+// contract), matching the defer-rollback-then-commit pattern used elsewhere
+// in this codebase (see migrate/'s use of store.RunMigration).
+func (t *Tx) Rollback() error { return t.tx.Rollback() }
+
+func (t *Tx) Insert(ent *schema.Entity, values map[string]any) (map[string]any, error) {
+	return insertWith(t.tx, ent, values)
+}
+func (t *Tx) GetByID(ent *schema.Entity, id string) (map[string]any, error) {
+	return getByIDWith(t.tx, ent, id)
+}
+func (t *Tx) Exists(ent *schema.Entity, id string) (bool, error) {
+	return existsWith(t.tx, ent, id)
+}
+func (t *Tx) List(ent *schema.Entity, q ListQuery) ([]map[string]any, int, error) {
+	return listWith(t.tx, ent, q)
+}
+func (t *Tx) Update(ent *schema.Entity, id string, values map[string]any) (map[string]any, error) {
+	return updateWith(t.tx, ent, id, values)
+}
+func (t *Tx) Delete(ent *schema.Entity, id string) (bool, error) {
+	return deleteWith(t.tx, ent, id)
+}
+
 // Insert writes a new row. values holds JSON-typed Go values keyed by field
 // name; the platform columns (id, created_at, updated_at) are supplied by the
 // caller via reserved keys. It returns the stored row, decoded back to JSON
 // types.
 func (s *Store) Insert(ent *schema.Entity, values map[string]any) (map[string]any, error) {
+	return insertWith(s.db, ent, values)
+}
+
+func insertWith(db dbi, ent *schema.Entity, values map[string]any) (map[string]any, error) {
 	cols := make([]string, 0, len(values))
 	placeholders := make([]string, 0, len(values))
 	args := make([]any, 0, len(values))
@@ -361,18 +422,22 @@ func (s *Store) Insert(ent *schema.Entity, values map[string]any) (map[string]an
 
 	query := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s);",
 		ent.ID, strings.Join(cols, ", "), strings.Join(placeholders, ", "))
-	if _, err := s.db.Exec(query, args...); err != nil {
+	if _, err := db.Exec(query, args...); err != nil {
 		return nil, classify(err)
 	}
-	return s.GetByID(ent, values["id"].(string))
+	return getByIDWith(db, ent, values["id"].(string))
 }
 
 // GetByID returns a single row by primary key, or (nil, nil) if absent.
 func (s *Store) GetByID(ent *schema.Entity, id string) (map[string]any, error) {
+	return getByIDWith(s.db, ent, id)
+}
+
+func getByIDWith(db dbi, ent *schema.Entity, id string) (map[string]any, error) {
 	cols := selectColumns(ent)
 	query := fmt.Sprintf("SELECT %s FROM %s WHERE id = ? LIMIT 1;",
 		strings.Join(physColumns(ent, cols), ", "), ent.ID)
-	rows, err := s.db.Query(query, id)
+	rows, err := db.Query(query, id)
 	if err != nil {
 		return nil, classify(err)
 	}
@@ -386,8 +451,12 @@ func (s *Store) GetByID(ent *schema.Entity, id string) (map[string]any, error) {
 // Exists reports whether a row with the given id exists. Used to validate
 // reference targets before a write.
 func (s *Store) Exists(ent *schema.Entity, id string) (bool, error) {
+	return existsWith(s.db, ent, id)
+}
+
+func existsWith(db dbi, ent *schema.Entity, id string) (bool, error) {
 	var one int
-	err := s.db.QueryRow(fmt.Sprintf("SELECT 1 FROM %s WHERE id = ? LIMIT 1;", ent.ID), id).Scan(&one)
+	err := db.QueryRow(fmt.Sprintf("SELECT 1 FROM %s WHERE id = ? LIMIT 1;", ent.ID), id).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -421,11 +490,15 @@ type ListQuery struct {
 // List returns matching rows plus the total count of rows matching the filters
 // (ignoring limit/offset).
 func (s *Store) List(ent *schema.Entity, q ListQuery) ([]map[string]any, int, error) {
+	return listWith(s.db, ent, q)
+}
+
+func listWith(db dbi, ent *schema.Entity, q ListQuery) ([]map[string]any, int, error) {
 	where, args := buildWhere(ent, q.Filters)
 
 	var total int
 	countQ := fmt.Sprintf("SELECT COUNT(*) FROM %s%s;", ent.ID, where)
-	if err := s.db.QueryRow(countQ, args...).Scan(&total); err != nil {
+	if err := db.QueryRow(countQ, args...).Scan(&total); err != nil {
 		return nil, 0, classify(err)
 	}
 
@@ -436,7 +509,7 @@ func (s *Store) List(ent *schema.Entity, q ListQuery) ([]map[string]any, int, er
 	sb.WriteString(" LIMIT ? OFFSET ?")
 	listArgs := append(append([]any{}, args...), q.Limit, q.Offset)
 
-	rows, err := s.db.Query(sb.String()+";", listArgs...)
+	rows, err := db.Query(sb.String()+";", listArgs...)
 	if err != nil {
 		return nil, 0, classify(err)
 	}
@@ -457,8 +530,12 @@ func (s *Store) List(ent *schema.Entity, q ListQuery) ([]map[string]any, int, er
 // (including updated_at). It returns the updated row, or (nil, nil) if the row
 // does not exist.
 func (s *Store) Update(ent *schema.Entity, id string, values map[string]any) (map[string]any, error) {
+	return updateWith(s.db, ent, id, values)
+}
+
+func updateWith(db dbi, ent *schema.Entity, id string, values map[string]any) (map[string]any, error) {
 	if len(values) == 0 {
-		return s.GetByID(ent, id)
+		return getByIDWith(db, ent, id)
 	}
 	sets := make([]string, 0, len(values))
 	args := make([]any, 0, len(values)+1)
@@ -469,21 +546,25 @@ func (s *Store) Update(ent *schema.Entity, id string, values map[string]any) (ma
 	args = append(args, id)
 
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = ?;", ent.ID, strings.Join(sets, ", "))
-	res, err := s.db.Exec(query, args...)
+	res, err := db.Exec(query, args...)
 	if err != nil {
 		return nil, classify(err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		// Either the row is absent, or no values changed. Disambiguate by read.
-		return s.GetByID(ent, id)
+		return getByIDWith(db, ent, id)
 	}
-	return s.GetByID(ent, id)
+	return getByIDWith(db, ent, id)
 }
 
 // Delete removes a row, reporting whether one was deleted.
 func (s *Store) Delete(ent *schema.Entity, id string) (bool, error) {
-	res, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE id = ?;", ent.ID), id)
+	return deleteWith(s.db, ent, id)
+}
+
+func deleteWith(db dbi, ent *schema.Entity, id string) (bool, error) {
+	res, err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE id = ?;", ent.ID), id)
 	if err != nil {
 		return false, classify(err)
 	}

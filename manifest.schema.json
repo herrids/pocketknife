@@ -28,9 +28,49 @@
     "functions": {
       "type": "array",
       "items": { "$ref": "#/$defs/function" }
+    },
+    "tools": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/tool" }
     }
   },
   "$defs": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "steps"],
+      "properties": {
+        "id": { "$ref": "#/$defs/stableId" },
+        "name": { "$ref": "#/$defs/machineName" },
+        "description": { "type": "string" },
+        "params": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/toolStep" }
+        }
+      }
+    },
+    "toolStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op", "entity"],
+      "properties": {
+        "id": { "$ref": "#/$defs/machineName" },
+        "op": { "enum": ["create", "read", "update", "delete"] },
+        "entity": { "$ref": "#/$defs/stableId" },
+        "rowId": {
+          "description": "A row id template: a literal id string, or a \"$params.<name>\"/\"$steps.<id>.<field>\" reference. Required for read/update/delete, forbidden for create."
+        },
+        "set": {
+          "type": "object",
+          "description": "Field name -> template value (literal JSON, or a \"$params.<name>\"/\"$steps.<id>.<field>\" reference string). Used by create/update steps."
+        }
+      }
+    },
     "frontend": {
       "type": "object",
       "additionalProperties": false,

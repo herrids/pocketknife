@@ -21,6 +21,7 @@ type ErrorKind int
 const (
 	ErrAppNotFound ErrorKind = iota
 	ErrEntityNotFound
+	ErrToolNotFound
 	ErrOperationDisabled
 	ErrValidation
 	ErrInvalidQuery
