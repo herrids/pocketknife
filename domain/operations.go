@@ -171,6 +171,24 @@ func Get(reg *registry.Registry, appID, entityName, id string) (map[string]any, 
 	return GetIn(ra.Store, ent, id)
 }
 
+// ListIn runs List's read against an explicit store and an already-built
+// query; see CreateIn. DefaultListQuery is the query a caller with no query
+// string to parse (e.g. a tool's list step) should pass.
+func ListIn(rs RowStore, ent *schema.Entity, q store.ListQuery) (*ListResult, *OpError) {
+	rows, total, err := rs.List(ent, q)
+	if err != nil {
+		return nil, storeOpError(err)
+	}
+	return &ListResult{Rows: rows, Total: total, Limit: q.Limit, Offset: q.Offset}, nil
+}
+
+// DefaultListQuery is the filterless, sortless, first-page query the HTTP
+// list endpoint defaults to when its query string is empty -- what a tool's
+// list step uses too, since a step declares no query parameters of its own.
+func DefaultListQuery() store.ListQuery {
+	return store.ListQuery{Limit: defaultLimit}
+}
+
 // List returns matching rows for the query-string-encoded filter/sort/
 // pagination terms described in domain/query.go.
 func List(reg *registry.Registry, appID, entityName string, query url.Values) (*ListResult, *OpError) {
@@ -182,11 +200,7 @@ func List(reg *registry.Registry, appID, entityName string, query url.Values) (*
 	if ferr != nil {
 		return nil, &OpError{Kind: ErrInvalidQuery, Message: ferr.Message, Issues: []FieldError{*ferr}}
 	}
-	rows, total, err := ra.Store.List(ent, q)
-	if err != nil {
-		return nil, storeOpError(err)
-	}
-	return &ListResult{Rows: rows, Total: total, Limit: q.Limit, Offset: q.Offset}, nil
+	return ListIn(ra.Store, ent, q)
 }
 
 // UpdateIn runs Update's validation and write logic against an explicit

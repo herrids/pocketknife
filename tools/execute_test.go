@@ -92,6 +92,37 @@ const tasksManifest = `{
         { "id": "project", "op": "create", "entity": "ent_project", "set": { "name": "$params.project_name" } },
         { "id": "task", "op": "create", "entity": "ent_task", "set": { "project": "$steps.project.id" } }
       ]
+    },
+    {
+      "id": "tool_list_tasks",
+      "name": "list_tasks",
+      "description": "List all tasks",
+      "steps": [
+        { "op": "list", "entity": "ent_task" }
+      ]
+    },
+    {
+      "id": "tool_list_tasks_in_project",
+      "name": "list_tasks_in_project",
+      "description": "List only the tasks belonging to one project",
+      "params": [
+        { "id": "p_project_id", "name": "project_id", "type": "reference", "target": "ent_project", "required": true }
+      ],
+      "steps": [
+        { "op": "list", "entity": "ent_task", "filter": { "project": "$params.project_id" } }
+      ]
+    },
+    {
+      "id": "tool_read_project",
+      "name": "read_project",
+      "description": "Read a project together with its tasks",
+      "params": [
+        { "id": "p_read_project_id", "name": "project_id", "type": "reference", "target": "ent_project", "required": true }
+      ],
+      "steps": [
+        { "id": "project", "op": "read", "entity": "ent_project", "rowId": "$params.project_id" },
+        { "id": "tasks", "op": "list", "entity": "ent_task", "filter": { "project": "$steps.project.id" } }
+      ]
     }
   ]
 }`
@@ -175,5 +206,101 @@ func TestExecuteRollsBackOnLaterStepFailure(t *testing.T) {
 	}
 	if res.Total != 0 {
 		t.Fatalf("project from the failed tool call was not rolled back: found %d matching rows", res.Total)
+	}
+}
+
+func TestExecuteListStep(t *testing.T) {
+	reg := bootApp(t, "tasks", tasksManifest)
+
+	for _, title := range []string{"Mow", "Rake", "Water"} {
+		if _, operr := domain.Create(reg, "tasks", "task", rawParams(map[string]any{"title": title})); operr != nil {
+			t.Fatalf("seed task %q: %+v", title, operr)
+		}
+	}
+
+	res, operr := tools.Execute(context.Background(), reg, "tasks", "list_tasks", nil)
+	if operr != nil {
+		t.Fatalf("execute: %+v", operr)
+	}
+	if total, _ := res.Result["total"].(int); total != 3 {
+		t.Fatalf("total = %v, want 3", res.Result["total"])
+	}
+	rows, ok := res.Result["rows"].([]map[string]any)
+	if !ok || len(rows) != 3 {
+		t.Fatalf("rows = %#v", res.Result["rows"])
+	}
+}
+
+func TestExecuteListStepWithFilterOnParam(t *testing.T) {
+	reg := bootApp(t, "tasks", tasksManifest)
+
+	home, operr := domain.Create(reg, "tasks", "project", rawParams(map[string]any{"name": "Home"}))
+	if operr != nil {
+		t.Fatalf("seed project: %+v", operr)
+	}
+	work, operr := domain.Create(reg, "tasks", "project", rawParams(map[string]any{"name": "Work"}))
+	if operr != nil {
+		t.Fatalf("seed project: %+v", operr)
+	}
+	homeID, workID := home["id"].(string), work["id"].(string)
+
+	for _, tc := range []struct{ title, project string }{
+		{"Mow", homeID}, {"Rake", homeID}, {"Ship it", workID},
+	} {
+		if _, operr := domain.Create(reg, "tasks", "task", rawParams(map[string]any{"title": tc.title, "project": tc.project})); operr != nil {
+			t.Fatalf("seed task %q: %+v", tc.title, operr)
+		}
+	}
+
+	res, operr := tools.Execute(context.Background(), reg, "tasks", "list_tasks_in_project", rawParams(map[string]any{"project_id": homeID}))
+	if operr != nil {
+		t.Fatalf("execute: %+v", operr)
+	}
+	if total, _ := res.Result["total"].(int); total != 2 {
+		t.Fatalf("total = %v, want 2", res.Result["total"])
+	}
+	rows, ok := res.Result["rows"].([]map[string]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("rows = %#v", res.Result["rows"])
+	}
+	for _, row := range rows {
+		if row["project"] != homeID {
+			t.Fatalf("row from wrong project leaked through filter: %#v", row)
+		}
+	}
+}
+
+func TestExecuteListStepWithFilterOnPriorStep(t *testing.T) {
+	reg := bootApp(t, "tasks", tasksManifest)
+
+	project, operr := domain.Create(reg, "tasks", "project", rawParams(map[string]any{"name": "Garden"}))
+	if operr != nil {
+		t.Fatalf("seed project: %+v", operr)
+	}
+	projectID := project["id"].(string)
+	if _, operr := domain.Create(reg, "tasks", "task", rawParams(map[string]any{"title": "Weed", "project": projectID})); operr != nil {
+		t.Fatalf("seed task: %+v", operr)
+	}
+	other, operr := domain.Create(reg, "tasks", "project", rawParams(map[string]any{"name": "Other"}))
+	if operr != nil {
+		t.Fatalf("seed project: %+v", operr)
+	}
+	if _, operr := domain.Create(reg, "tasks", "task", rawParams(map[string]any{"title": "Unrelated", "project": other["id"].(string)})); operr != nil {
+		t.Fatalf("seed task: %+v", operr)
+	}
+
+	res, operr := tools.Execute(context.Background(), reg, "tasks", "read_project", rawParams(map[string]any{"project_id": projectID}))
+	if operr != nil {
+		t.Fatalf("execute: %+v", operr)
+	}
+	if res.Steps["project"]["name"] != "Garden" {
+		t.Fatalf("project step = %#v", res.Steps["project"])
+	}
+	if total, _ := res.Steps["tasks"]["total"].(int); total != 1 {
+		t.Fatalf("tasks total = %v, want 1", res.Steps["tasks"]["total"])
+	}
+	rows, ok := res.Steps["tasks"]["rows"].([]map[string]any)
+	if !ok || len(rows) != 1 || rows[0]["title"] != "Weed" {
+		t.Fatalf("tasks rows = %#v", res.Steps["tasks"]["rows"])
 	}
 }

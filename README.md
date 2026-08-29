@@ -411,10 +411,14 @@ names and sequences those calls, atomically, in one transaction.
   constraint keys) — so the same field-coercion rules validate them, and the
   MCP endpoint renders them as a real JSON Schema for the tool's arguments.
 - **`steps`** is the ordered CRUD sequence, one of `create`/`read`/`update`/
-  `delete` per step against one entity, restricted to operations that
-  entity's own `operations` list already allows. `rowId` is required for
-  read/update/delete and forbidden for create; `set` maps field name to value
-  for create/update.
+  `delete`/`list` per step against one entity, restricted to operations that
+  entity's own `operations` list already allows (`list` is gated by that same
+  entity's `read` permission — it has no separate entity-level grant of its
+  own). `rowId` is required for read/update/delete and forbidden for
+  create/list; `set` maps field name to value for create/update. `list`
+  takes no filter/sort/pagination params — it returns every row (as
+  `{"rows": [...], "total": N}`, capped the same way an unfiltered `GET
+  /apps/{app}/{entity}` call is).
 - Every `rowId`/`set` value is either a **literal** JSON value or a
   **reference**: a string of the form `"$params.<name>"` (this call's
   arguments) or `"$steps.<id>.<field>"` (an earlier step's result row in the
@@ -586,6 +590,37 @@ data**. `pocketknife migrate -app <id> -to <new.json>` runs the pipeline:
 
 Witnesses are supplied via `-witnesses <file.json>`, a JSON object keyed by the
 stable **field id** the witness applies to.
+
+## Seed data (`seed/`)
+
+An app that lives directly on disk under `apps/<app_id>/` (a hand-authored
+manifest, not one submitted through the agent deploy pipeline) may ship an
+optional `apps/<app_id>/data/` folder of starter rows. It has no effect on an
+app whose `data.db` already exists — it only runs on the one boot where
+`registry.Load` finds no `data.db` file yet, i.e. an app's very first boot.
+Deleting `data.db*` (already the `make clean` reset mechanism) is how you
+re-trigger it in dev.
+
+- One file per entity, named `<entity_name>.json` (the entity's `name`, not
+  its stable id).
+- Each file is a JSON array of row objects, shaped exactly like a `POST
+  /apps/{app}/{entity}` body.
+- An optional `"$key"` string per row labels that row for other rows —
+  possibly in a later file — to reference; it is stripped before insertion
+  and never stored.
+- A `reference`-typed field's value must be a `"$<entity_name>.<key>"`
+  placeholder naming another row's `"$key"`, resolved to its real generated
+  id. There is no literal-id fallback — the database is fresh, so there is
+  nothing else yet to reference.
+- Entities seed in the manifest's declared order (the same order `materialize`
+  emits `CREATE TABLE` in), so an entity referenced by another must be
+  declared — and therefore seeded — first. No reference cycles or
+  self-references are supported.
+- All rows across all files insert in one transaction: any error (an unknown
+  seed filename, a row that fails the entity's normal Create validation, an
+  unresolved reference) rolls every one of them back, and the app is skipped
+  for that boot — logged, never served — the same hard-gate posture
+  `registry.Load` already applies to an invalid manifest.
 
 ## Build & activation (`build/`)
 

@@ -85,6 +85,7 @@ type rawToolStep struct {
 	Entity string                     `json:"entity"`
 	RowID  json.RawMessage            `json:"rowId"`
 	Set    map[string]json.RawMessage `json:"set"`
+	Filter map[string]json.RawMessage `json:"filter"`
 }
 
 // Parse converts manifest bytes into the typed model. It assumes the bytes have
@@ -177,6 +178,12 @@ func Parse(data []byte) (*App, error) {
 					step.Set = map[string]*StepValue{}
 				}
 				step.Set[name] = parseStepValue(raw)
+			}
+			for name, raw := range rs.Filter {
+				if step.Filter == nil {
+					step.Filter = map[string]*StepValue{}
+				}
+				step.Filter[name] = parseStepValue(raw)
 			}
 			tool.Steps = append(tool.Steps, step)
 		}

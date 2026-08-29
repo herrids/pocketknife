@@ -19,8 +19,12 @@ type LoadResult struct {
 	ManifestPath string
 	AppID        string
 	OK           bool
-	Errors       validate.Errors
-	Err          error
+	// Fresh is true when this app's data.db did not exist on disk before this
+	// Load call created it -- the signal a caller uses to seed starter data
+	// exactly once, on an app's very first boot (see the seed package).
+	Fresh  bool
+	Errors validate.Errors
+	Err    error
 }
 
 // Load scans appsDir for */manifest.json, then for each: validates (the hard
@@ -86,7 +90,11 @@ func Load(appsDir string) (*Registry, []LoadResult, error) {
 			continue
 		}
 
-		st, err := store.Open(filepath.Join(dir, "data.db"))
+		dbPath := filepath.Join(dir, "data.db")
+		_, statErr := os.Stat(dbPath)
+		res.Fresh = os.IsNotExist(statErr)
+
+		st, err := store.Open(dbPath)
 		if err != nil {
 			res.Err = fmt.Errorf("open store: %w", err)
 			results = append(results, res)

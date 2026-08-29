@@ -39,9 +39,13 @@ func bootApp(t *testing.T, appID, manifest string) *registry.Registry {
 const tasksManifest = `{
   "app": { "id": "tasks", "name": "Tasks", "version": 1 },
   "entities": [
+    { "id": "ent_project", "name": "project", "fields": [
+      { "id": "fld_pname", "name": "name", "type": "text", "required": true }
+    ]},
     { "id": "ent_task", "name": "task", "fields": [
       { "id": "fld_title",  "name": "title",  "type": "text", "required": true },
-      { "id": "fld_status", "name": "status", "type": "enum", "values": ["planned", "done"], "default": "planned" }
+      { "id": "fld_status", "name": "status", "type": "enum", "values": ["planned", "done"], "default": "planned" },
+      { "id": "fld_project", "name": "project", "type": "reference", "target": "ent_project" }
     ]}
   ],
   "tools": [
@@ -65,6 +69,19 @@ const tasksManifest = `{
       ],
       "steps": [
         { "op": "update", "entity": "ent_task", "rowId": "$params.task_id", "set": { "status": "done" } }
+      ]
+    },
+    {
+      "id": "tool_create_task_named",
+      "name": "create_task_named",
+      "description": "Create a project, then a task inside it, with both steps named",
+      "params": [
+        { "id": "p_name", "name": "project_name", "type": "text", "required": true },
+        { "id": "p_title2", "name": "title", "type": "text", "required": true }
+      ],
+      "steps": [
+        { "id": "project", "op": "create", "entity": "ent_project", "set": { "name": "$params.project_name" } },
+        { "id": "task", "op": "create", "entity": "ent_task", "set": { "title": "$params.title", "project": "$steps.project.id" } }
       ]
     }
   ]
@@ -108,8 +125,8 @@ func TestListToolsAndCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(listed.Tools) != 2 {
-		t.Fatalf("got %d tools, want 2", len(listed.Tools))
+	if len(listed.Tools) != 3 {
+		t.Fatalf("got %d tools, want 3", len(listed.Tools))
 	}
 	names := map[string]bool{}
 	for _, tl := range listed.Tools {
@@ -146,6 +163,37 @@ func TestListToolsAndCall(t *testing.T) {
 	}
 	if status := done.StructuredContent.(map[string]any)["status"]; status != "done" {
 		t.Fatalf("status = %v, want done", status)
+	}
+}
+
+func TestCallToolWithNamedStepsReturnsEveryStep(t *testing.T) {
+	reg := bootApp(t, "tasks", tasksManifest)
+	ts := httptest.NewServer(mcpserver.NewServer(reg))
+	defer ts.Close()
+
+	session := connect(t, ts.URL+"/mcp/tasks")
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "create_task_named",
+		Arguments: map[string]any{"project_name": "Home", "title": "Mow the lawn"},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("create_task_named reported an error: %+v", res.Content)
+	}
+
+	content, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structured content is not a map: %#v", res.StructuredContent)
+	}
+	project, ok := content["project"].(map[string]any)
+	if !ok || project["name"] != "Home" {
+		t.Fatalf("project step = %#v", content["project"])
+	}
+	task, ok := content["task"].(map[string]any)
+	if !ok || task["title"] != "Mow the lawn" || task["project"] != project["id"] {
+		t.Fatalf("task step = %#v", content["task"])
 	}
 }
 

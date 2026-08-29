@@ -30,6 +30,7 @@ import (
 	"pocketknife/migrate"
 	"pocketknife/platform"
 	"pocketknife/registry"
+	"pocketknife/seed"
 	"pocketknife/shellserve"
 	"pocketknife/validateapi"
 )
@@ -106,6 +107,30 @@ func runServe(args []string) {
 			}
 		case res.Err != nil:
 			log.Printf("SKIPPED %s — %v", res.ManifestPath, res.Err)
+		}
+	}
+
+	// Seed starter data from apps/<id>/data/, but only for an app whose
+	// data.db this boot just created. A seed failure un-registers the app
+	// rather than serving it partially seeded — the same hard-gate posture
+	// registry.Load already applies to an invalid manifest.
+	for _, res := range results {
+		if !res.OK || !res.Fresh {
+			continue
+		}
+		ra, ok := reg.App(res.AppID)
+		if !ok {
+			continue
+		}
+		seeded, err := seed.Apply(ra)
+		if err != nil {
+			log.Printf("SKIPPED app %q — seed data failed: %v", res.AppID, err)
+			ra.Store.Close()
+			reg.Unregister(res.AppID)
+			continue
+		}
+		if seeded {
+			log.Printf("seeded starter data for app %q", res.AppID)
 		}
 	}
 

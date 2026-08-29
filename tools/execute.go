@@ -95,6 +95,19 @@ func runStep(tx *store.Tx, ra *registry.RegisteredApp, ent *schema.Entity, step 
 		}
 		return domain.GetIn(tx, ent, id)
 
+	case schema.OpList:
+		filters, issues := resolveFilters(step.Filter, params, steps)
+		if len(issues) > 0 {
+			return nil, &domain.OpError{Kind: domain.ErrValidation, Message: "step failed validation", Issues: issues}
+		}
+		q := domain.DefaultListQuery()
+		q.Filters = filters
+		result, operr := domain.ListIn(tx, ent, q)
+		if operr != nil {
+			return nil, operr
+		}
+		return map[string]any{"rows": result.Rows, "total": result.Total}, nil
+
 	case schema.OpUpdate:
 		id, ferr := resolveID(step.RowID, params, steps)
 		if ferr != nil {
@@ -139,10 +152,15 @@ func resolveParams(app *schema.App, rs domain.RowStore, tool *schema.Tool, provi
 	for _, p := range tool.Params {
 		raw, present := provided[p.Name]
 		if !present {
-			if p.HasDefault {
+			switch {
+			case p.HasDefault:
 				values[p.Name] = domain.DefaultStoreValue(p)
-			} else if p.Required {
+			case p.Required:
 				issues = append(issues, domain.FieldError{Field: p.Name, Message: "is required"})
+			default:
+				// Optional, no default, not provided: resolves to null for any
+				// step that references it — the same as an explicit null would.
+				values[p.Name] = nil
 			}
 			continue
 		}
@@ -178,6 +196,28 @@ func resolveSet(set map[string]*schema.StepValue, params map[string]any, steps m
 		body[field] = raw
 	}
 	return body, issues
+}
+
+// resolveFilters builds a list step's equality filters (AND-combined) from
+// its declared filter templates, resolved against the call's params and
+// prior steps' results exactly like resolveSet.
+func resolveFilters(filter map[string]*schema.StepValue, params map[string]any, steps map[string]map[string]any) ([]store.Filter, []domain.FieldError) {
+	var filters []store.Filter
+	var issues []domain.FieldError
+	for field, sv := range filter {
+		raw, err := resolveValue(sv, params, steps)
+		if err != nil {
+			issues = append(issues, domain.FieldError{Field: field, Message: err.Error()})
+			continue
+		}
+		var val any
+		if err := json.Unmarshal(raw, &val); err != nil {
+			issues = append(issues, domain.FieldError{Field: field, Message: "must resolve to a value"})
+			continue
+		}
+		filters = append(filters, store.Filter{Column: field, Operator: "=", Value: val})
+	}
+	return filters, issues
 }
 
 // resolveID resolves a rowId template to a plain string.

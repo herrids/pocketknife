@@ -97,15 +97,28 @@ func toolHandler(reg *registry.Registry, appID, toolID string) mcp.ToolHandler {
 			return errorResult(opErrMessage(operr)), nil
 		}
 
-		payload, err := json.Marshal(result.Result)
+		content := toolResultContent(result)
+		payload, err := json.Marshal(content)
 		if err != nil {
 			return errorResult("could not encode result: " + err.Error()), nil
 		}
 		return &mcp.CallToolResult{
 			Content:           []mcp.Content{&mcp.TextContent{Text: string(payload)}},
-			StructuredContent: result.Result,
+			StructuredContent: content,
 		}, nil
 	}
+}
+
+// toolResultContent chooses what a tool call reports back: if the tool
+// named any of its steps, the caller gets every named step's row keyed by
+// that step's id (e.g. a "workout" read step alongside an "exercises" list
+// step both come back), so a caller can see more than just the last step's
+// row; an unnamed-steps tool keeps the plain last-step row it always has.
+func toolResultContent(result *tools.Result) any {
+	if len(result.Steps) == 0 {
+		return result.Result
+	}
+	return result.Steps
 }
 
 func errorResult(msg string) *mcp.CallToolResult {

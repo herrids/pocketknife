@@ -23,7 +23,11 @@ const (
 	TypeReference FieldType = "reference"
 )
 
-// Operation names the four CRUD operations an entity may expose.
+// Operation names the four CRUD operations an entity may expose, plus
+// OpList: a fifth value valid only for a ToolStep, never for an entity's own
+// declared operations set. Listing many rows shares an entity's OpRead
+// permission (the same way the HTTP list endpoint does) rather than needing
+// its own entity-level grant.
 type Operation string
 
 const (
@@ -31,6 +35,7 @@ const (
 	OpRead   Operation = "read"
 	OpUpdate Operation = "update"
 	OpDelete Operation = "delete"
+	OpList   Operation = "list"
 )
 
 // AllOperations is the default operation set for an entity that does not
@@ -217,6 +222,10 @@ type ToolStep struct {
 	// Set maps a field name on Entity to a template value. Used for create's
 	// initial values and update's changed fields; unused for read and delete.
 	Set map[string]*StepValue
+	// Filter maps a field name on Entity to a template value that field must
+	// equal, AND-combined across entries. Only valid for op "list"; unused
+	// for every other op.
+	Filter map[string]*StepValue
 }
 
 // StepValue is a template resolved at call time inside a ToolStep. A Ref of

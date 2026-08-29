@@ -60,14 +60,18 @@
       "required": ["op", "entity"],
       "properties": {
         "id": { "$ref": "#/$defs/machineName" },
-        "op": { "enum": ["create", "read", "update", "delete"] },
+        "op": { "enum": ["create", "read", "update", "delete", "list"] },
         "entity": { "$ref": "#/$defs/stableId" },
         "rowId": {
-          "description": "A row id template: a literal id string, or a \"$params.<name>\"/\"$steps.<id>.<field>\" reference. Required for read/update/delete, forbidden for create."
+          "description": "A row id template: a literal id string, or a \"$params.<name>\"/\"$steps.<id>.<field>\" reference. Required for read/update/delete, forbidden for create/list."
         },
         "set": {
           "type": "object",
           "description": "Field name -> template value (literal JSON, or a \"$params.<name>\"/\"$steps.<id>.<field>\" reference string). Used by create/update steps."
+        },
+        "filter": {
+          "type": "object",
+          "description": "Field name -> template value (literal JSON, or a \"$params.<name>\"/\"$steps.<id>.<field>\" reference string) that field must equal, AND-combined across entries. Only valid for list steps."
         }
       }
     },

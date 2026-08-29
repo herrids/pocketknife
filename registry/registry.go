@@ -44,6 +44,14 @@ func (r *Registry) Register(app *RegisteredApp) {
 	r.apps[app.Schema.ID] = app
 }
 
+// Unregister removes an app so it is no longer served. It does not close the
+// app's store -- the caller, which opened it, is responsible for that.
+func (r *Registry) Unregister(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.apps, id)
+}
+
 // App returns the registered app for an ID.
 func (r *Registry) App(id string) (*RegisteredApp, bool) {
 	r.mu.RLock()

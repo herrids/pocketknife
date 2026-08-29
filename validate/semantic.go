@@ -130,8 +130,16 @@ func validateTool(path string, app *schema.App, tool *schema.Tool) Errors {
 		ent := app.EntityByID(step.Entity)
 		if ent == nil {
 			errs = append(errs, Error{spath + "/entity", "unresolved_reference", fmt.Sprintf("step entity %q does not resolve to an entity in this manifest", step.Entity)})
-		} else if !ent.Allows(step.Op) {
-			errs = append(errs, Error{spath + "/op", "scope_exceeds_entity", fmt.Sprintf("tool %q step calls %q on entity %q, which the entity itself does not allow", tool.Name, step.Op, ent.Name)})
+		} else {
+			// list shares an entity's read permission -- entities never
+			// declare "list" itself in their own operations set.
+			requiredOp := step.Op
+			if step.Op == schema.OpList {
+				requiredOp = schema.OpRead
+			}
+			if !ent.Allows(requiredOp) {
+				errs = append(errs, Error{spath + "/op", "scope_exceeds_entity", fmt.Sprintf("tool %q step calls %q on entity %q, which the entity itself does not allow", tool.Name, step.Op, ent.Name)})
+			}
 		}
 
 		switch step.Op {
@@ -139,13 +147,20 @@ func validateTool(path string, app *schema.App, tool *schema.Tool) Errors {
 			if step.RowID != nil {
 				errs = append(errs, Error{spath + "/rowId", "unexpected_field", "create steps must not declare rowId"})
 			}
+		case schema.OpList:
+			if step.RowID != nil {
+				errs = append(errs, Error{spath + "/rowId", "unexpected_field", "list steps must not declare rowId"})
+			}
 		case schema.OpRead, schema.OpUpdate, schema.OpDelete:
 			if step.RowID == nil {
 				errs = append(errs, Error{spath + "/rowId", "missing_field", fmt.Sprintf("%q steps require rowId", step.Op)})
 			}
 		}
-		if (step.Op == schema.OpRead || step.Op == schema.OpDelete) && len(step.Set) > 0 {
+		if (step.Op == schema.OpRead || step.Op == schema.OpDelete || step.Op == schema.OpList) && len(step.Set) > 0 {
 			errs = append(errs, Error{spath + "/set", "unexpected_field", fmt.Sprintf("%q steps must not declare set", step.Op)})
+		}
+		if step.Op != schema.OpList && len(step.Filter) > 0 {
+			errs = append(errs, Error{spath + "/filter", "unexpected_field", fmt.Sprintf("%q steps must not declare filter", step.Op)})
 		}
 
 		if ent != nil {
@@ -156,6 +171,11 @@ func validateTool(path string, app *schema.App, tool *schema.Tool) Errors {
 				}
 				if ent.Field(fname) == nil {
 					errs = append(errs, Error{spath + "/set/" + fname, "unresolved_reference", fmt.Sprintf("field %q does not exist on entity %q", fname, ent.Name)})
+				}
+			}
+			for fname := range step.Filter {
+				if ent.Field(fname) == nil && !isReserved(fname) {
+					errs = append(errs, Error{spath + "/filter/" + fname, "unresolved_reference", fmt.Sprintf("field %q does not exist on entity %q", fname, ent.Name)})
 				}
 			}
 		}
@@ -182,6 +202,9 @@ func validateTool(path string, app *schema.App, tool *schema.Tool) Errors {
 		checkRef(spath+"/rowId", step.RowID)
 		for fname, sv := range step.Set {
 			checkRef(spath+"/set/"+fname, sv)
+		}
+		for fname, sv := range step.Filter {
+			checkRef(spath+"/filter/"+fname, sv)
 		}
 
 		if step.ID != "" {
