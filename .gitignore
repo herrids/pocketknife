@@ -7,8 +7,6 @@ data.db
 # Build output
 /bin/
 /pocketknife
-/shell/dist/
-/shell/node_modules/
 
 # Go test/coverage artifacts
 *.out
